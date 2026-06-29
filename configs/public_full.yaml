@@ -1,0 +1,84 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - VTI
+  - EFA
+  - EEM
+  - EWJ
+  - EWU
+  - EWG
+  - FXI
+  - TLT
+  - IEF
+  - SHY
+  - LQD
+  - HYG
+  - TIP
+  - AGG
+  - GLD
+  - SLV
+  - USO
+  - DBC
+  - VNQ
+  - IYR
+  - XLF
+  - XLK
+  - XLE
+  - XLI
+  - XLU
+  - XLP
+  - XLY
+  - XLV
+  - XLB
+  - XLRE
+  - MTUM
+  - QUAL
+  - USMV
+  - VLUE
+  - SIZE
+  - SPLV
+  - VUG
+  - VTV
+  - IVE
+  - IVW
+  - ARKK
+  - SMH
+  - XBI
+start_date: "2007-01-01"
+end_date: "2024-12-31"
+min_history_coverage: 0.90
+min_assets: 30
+raw_data_path: data/raw/public_full_ohlcv.csv
+processed_data_path: data/processed/public_full_prices.csv
+download_source: yfinance
+allow_synthetic_fallback: false
+
+selection_blocks: 12
+validation_window_blocks: 4
+oos_window_blocks: 2
+final_confirmation_months: 12
+n_seeds: 10
+quick_n_seeds: 2
+search_budget: 100
+quick_search_budget: 24
+candidate_per_round: 8
+bootstrap_samples: 200
+
+initial_capital: 1.0
+rebalance: W-FRI
+top_k: 6
+momentum_window: 20
+volatility_window: 20
+volatility_penalty: 0.25
+threshold: -999.0
+transaction_cost_bps: 5
+max_weight: 0.20
+risk_floor: 0.0
+
+headline:
+  pbo_weight: 1.0
+  degradation_weight: 1.0
+  dsr_weight: 0.5
+  violation_weight: 1.0

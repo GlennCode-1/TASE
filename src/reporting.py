@@ -675,6 +675,8 @@ This public-data toy task does not test live profitability. It asks whether fina
 - H4 supported: {interp["h4"]}
 - H5 supported: {interp["h5"]}
 
+Note: unconstrained search may show very high raw locked metrics, but it fails the leakage/constraint audit. This report therefore does not treat that as a profitability claim or as sufficient support for the TASE mechanism.
+
 ## Key Comparisons
 
 - Unconstrained PBO: {_fmt(float(interp["free_pbo"]))}; TASE PBO: {_fmt(float(interp["tase_pbo"]))}
@@ -733,6 +735,115 @@ def write_public_toy_reports(
     plain = build_public_toy_plain_chinese_summary(summary)
     technical_path = reports_dir / "public_toy_report.md"
     plain_path = reports_dir / "plain_chinese_summary_public_toy.md"
+    technical_path.write_text(technical, encoding="utf-8")
+    plain_path.write_text(plain, encoding="utf-8")
+    return technical_path, plain_path
+
+
+def build_public_full_technical_report(
+    results: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    summary: pd.DataFrame,
+    bootstrap: pd.DataFrame | None,
+    config: dict,
+) -> str:
+    interp = interpret_public_toy_results(summary)
+    metrics_table = summary.to_markdown(index=False)
+    candidate_counts = candidate_log.groupby("arm")["candidate_id"].nunique().to_markdown()
+    bootstrap_table = "No bootstrap output."
+    if bootstrap is not None and not bootstrap.empty:
+        bootstrap_table = bootstrap.to_markdown(index=False)
+    return f"""# T.A.S.E Public Full ETF Report
+
+## Purpose
+
+This public full run tests overfitting-adjusted robustness, not live trading profitability. It uses a larger fixed ETF candidate universe, equal search budgets, multiple rolling splits, and bootstrap confidence intervals.
+
+## Data And Task
+
+- Universe request: {", ".join(config["universe"])}
+- Minimum history coverage: {config.get("min_history_coverage", "NA")}
+- Minimum retained assets: {config["min_assets"]}
+- Retained assets in run: {config.get("retained_assets", "NA")}
+- Filtered tickers: {config.get("filtered_tickers", "NA")}
+- Date request: {config["start_date"]} to {config["end_date"]}
+- Run mode: {config.get("run_mode", "full")}
+- Effective evaluation window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
+- Search budget per searchable arm: {config["quick_search_budget"] if config.get("run_mode") == "quick smoke" else config["search_budget"]}
+- Seeds: {config["quick_n_seeds"] if config.get("run_mode") == "quick smoke" else config["n_seeds"]}
+
+## Headline Metrics
+
+{metrics_table}
+
+## Bootstrap CI
+
+{bootstrap_table}
+
+## Candidate Counts
+
+{candidate_counts}
+
+## H1-H5 Judgment
+
+- H1 supported: {interp["h1"]}
+- H2 supported: {interp["h2"]}
+- H3 supported: {interp["h3"]}
+- H4 supported: {interp["h4"]}
+- H5 supported: {interp["h5"]}
+
+## Important Interpretation Note
+
+The unconstrained arm can show very high raw locked metrics, but it fails the leakage/constraint audit. This report therefore does not treat that raw score as a profitability claim or as sufficient support for TASE.
+
+## Recommendation
+
+{interp["recommendation"]}
+"""
+
+
+def build_public_full_plain_chinese_summary(summary: pd.DataFrame) -> str:
+    interp = interpret_public_toy_results(summary)
+    free = _arm_row(summary, "MetaHarness Unconstrained")
+    tase = _arm_row(summary, "TASE Typed Harness")
+    h = lambda key: "支持" if bool(interp[key]) else "暂不支持"
+    return f"""# 大白话实验结论
+
+## 这次想验证什么
+
+这次不再用假市场，也不再用小 toy 参数，而是用更长时间、更大 ETF 池、更多搜索次数和更多切分，检验自由修改交易流程是否容易过拟合，受约束自我改进是否更稳，以及它是否真的超过“同样预算下只挑安全配置”和“随机合法修改”。
+
+## 结果怎么样
+
+这次仍然不是在证明真实赚钱能力，而是在看系统是否容易把验证阶段当成答案本。自由修改组的过拟合概率估计是 {_fmt(float(free["pbo_estimate"]))}，TASE 组是 {_fmt(float(tase["pbo_estimate"]))}。自由修改组的规则违规更多，TASE 的规则检查通过率更高，说明金融约束确实起作用。但如果 TASE 没有超过同预算安全配置或随机合法修改，就不能说自我改进已经有额外价值。自由修改组的原始收益和夏普看起来很高，但它没有通过规则检查，所以不能当成真实盈利结论。收益和夏普只作为辅助观察，不作为唯一胜负。
+
+## 对应哪条假设
+
+H1：{h("h1")}。
+H2：{h("h2")}。
+H3：{h("h3")}。
+H4：{h("h4")}。
+H5：{h("h5")}。
+
+## 下一步
+
+{interp["recommendation"]}
+"""
+
+
+def write_public_full_reports(
+    results: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    summary: pd.DataFrame,
+    bootstrap: pd.DataFrame | None,
+    config: dict,
+    reports_dir: Path,
+) -> tuple[Path, Path]:
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    technical = build_public_full_technical_report(results, candidate_log, summary, bootstrap, config)
+    plain = build_public_full_plain_chinese_summary(summary)
+    technical_path = reports_dir / "public_full_report.md"
+    plain_path = reports_dir / "plain_chinese_summary_public_full.md"
     technical_path.write_text(technical, encoding="utf-8")
     plain_path.write_text(plain, encoding="utf-8")
     return technical_path, plain_path

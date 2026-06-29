@@ -72,34 +72,139 @@ def _rebalance_dates(data: pd.DataFrame, rule: str) -> set[pd.Timestamp]:
     return set(marker.resample(rule).last().dropna().index)
 
 
-def compute_target_weights(features: pd.DataFrame, harness: PublicHarnessConfig, config: dict) -> pd.DataFrame:
+def public_feature_matrices(features: pd.DataFrame) -> dict[str, object]:
     data = features.sort_values(["date", "ticker"]).copy()
-    score_col = "future_return_1d" if harness.allow_future_features else "score"
-    if harness.momentum_window != int(config["momentum_window"]) or harness.volatility_penalty != float(config["volatility_penalty"]):
-        # Strategy baseline only: recompute a simple alternate score from safe lagged columns.
-        scale = float(harness.momentum_window) / max(1.0, float(config["momentum_window"]))
-        data["strategy_score"] = data["momentum_20"] * scale - float(harness.volatility_penalty) * data["volatility_20"]
-        score_col = "strategy_score"
-    rebal_dates = _rebalance_dates(data, harness.rebalance)
     dates = pd.DatetimeIndex(sorted(data["date"].unique()))
     tickers = list(sorted(data["ticker"].unique()))
-    ticker_index = {ticker: idx for idx, ticker in enumerate(tickers)}
-    weight_matrix = np.zeros((len(dates), len(tickers)), dtype=float)
+
+    def matrix(col: str) -> np.ndarray:
+        return (
+            data.pivot(index="date", columns="ticker", values=col)
+            .reindex(index=dates, columns=tickers)
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
+
+    per_date = data.drop_duplicates("date").set_index("date").reindex(dates)
+    if "block" in per_date.columns:
+        block = per_date["block"].to_numpy()
+    else:
+        block = np.zeros(len(dates), dtype=int)
+    if "is_final_confirmation" in per_date.columns:
+        final = per_date["is_final_confirmation"].to_numpy(dtype=bool)
+    else:
+        final = np.zeros(len(dates), dtype=bool)
+    return {
+        "dates": dates,
+        "tickers": tickers,
+        "return_1d": matrix("return_1d"),
+        "score": matrix("score"),
+        "future_return_1d": matrix("future_return_1d"),
+        "momentum_20": matrix("momentum_20"),
+        "volatility_20": matrix("volatility_20"),
+        "block": block,
+        "is_final_confirmation": final,
+    }
+
+
+def compute_target_weight_matrix(matrices: dict[str, object], harness: PublicHarnessConfig, config: dict) -> np.ndarray:
+    dates = matrices["dates"]
+    tickers = matrices["tickers"]
+    assert isinstance(dates, pd.DatetimeIndex)
+    assert isinstance(tickers, list)
+    if harness.allow_future_features:
+        scores = np.asarray(matrices["future_return_1d"], dtype=float)
+    elif harness.momentum_window != int(config["momentum_window"]) or harness.volatility_penalty != float(config["volatility_penalty"]):
+        scale = float(harness.momentum_window) / max(1.0, float(config["momentum_window"]))
+        scores = np.asarray(matrices["momentum_20"], dtype=float) * scale - float(harness.volatility_penalty) * np.asarray(
+            matrices["volatility_20"], dtype=float
+        )
+    else:
+        scores = np.asarray(matrices["score"], dtype=float)
+
+    rebal_dates = _rebalance_dates(pd.DataFrame({"date": dates}), harness.rebalance)
+    weights = np.zeros((len(dates), len(tickers)), dtype=float)
     current = np.zeros(len(tickers), dtype=float)
-    for row_idx, (date, group) in enumerate(data.groupby("date", sort=True)):
+    threshold = float(harness.threshold)
+    top_k = int(harness.top_k)
+    max_weight = float(config["max_weight"])
+    vol = np.asarray(matrices["volatility_20"], dtype=float)
+
+    for row_idx, date in enumerate(dates):
         if pd.Timestamp(date) in rebal_dates:
-            ranked = group[group[score_col] > float(harness.threshold)].sort_values(score_col, ascending=False)
-            chosen = ranked.head(int(harness.top_k))["ticker"].tolist()
+            row_scores = scores[row_idx]
+            eligible = np.where(row_scores > threshold)[0]
             current.fill(0.0)
-            if chosen:
-                weight = min(1.0 / len(chosen), float(config["max_weight"]))
-                for ticker in chosen:
-                    current[ticker_index[ticker]] = weight
-            if harness.policy_risk_rule == "risk_off_on_high_vol" and group["volatility_20"].mean() > group["volatility_20"].median() * 1.2:
+            if eligible.size:
+                ranked = eligible[np.argsort(row_scores[eligible])[::-1]][:top_k]
+                weight = min(1.0 / len(ranked), max_weight)
+                current[ranked] = weight
+            vol_row = vol[row_idx]
+            if harness.policy_risk_rule == "risk_off_on_high_vol" and float(np.nanmean(vol_row)) > float(np.nanmedian(vol_row)) * 1.2:
                 current *= 0.5
-        weight_matrix[row_idx, :] = current
+        weights[row_idx] = current
+    return weights
+
+
+def compute_target_weights(features: pd.DataFrame, harness: PublicHarnessConfig, config: dict) -> pd.DataFrame:
+    matrices = public_feature_matrices(features)
+    dates = matrices["dates"]
+    tickers = matrices["tickers"]
+    assert isinstance(dates, pd.DatetimeIndex)
+    assert isinstance(tickers, list)
+    weight_matrix = compute_target_weight_matrix(matrices, harness, config)
     index = pd.MultiIndex.from_product([dates, tickers], names=["date", "ticker"])
     return pd.DataFrame({"target_weight": weight_matrix.reshape(-1)}, index=index).reset_index()
+
+
+def evaluate_weight_matrix(
+    returns: np.ndarray,
+    weights: np.ndarray,
+    mask: np.ndarray,
+    harness: PublicHarnessConfig,
+    config: dict,
+    pi_pass: bool = True,
+) -> PublicEvaluation:
+    if not bool(mask.any()):
+        return PublicEvaluation(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1, False, 1, 0)
+    wide_w = weights[mask]
+    wide_r = returns[mask]
+    first_turnover = np.abs(wide_w[0]).sum() if len(wide_w) else 0.0
+    rest_turnover = np.abs(np.diff(wide_w, axis=0)).sum(axis=1) if len(wide_w) > 1 else np.asarray([], dtype=float)
+    turnover = np.concatenate([[first_turnover], rest_turnover])
+    cost = turnover * (float(config["transaction_cost_bps"]) / 10000.0)
+    shifted = np.vstack([np.zeros((1, wide_w.shape[1])), wide_w[:-1]])
+    gross = (shifted * wide_r).sum(axis=1)
+    net = gross - cost
+
+    equity = np.cumprod(1.0 + net)
+    cumulative = float(equity[-1] - 1.0)
+    mean = float(net.mean())
+    std = float(net.std(ddof=0))
+    sharpe = 0.0 if std == 0.0 else mean / std * float(np.sqrt(252.0))
+    annual = float(equity[-1] ** (252.0 / max(1, len(net))) - 1.0)
+    running_max = np.maximum.accumulate(equity)
+    drawdown = equity / running_max - 1.0
+    max_dd = float(drawdown.min())
+    downside = net[net < 0.0]
+    sortino = 0.0 if downside.size == 0 or downside.std(ddof=0) == 0.0 else mean / float(downside.std(ddof=0)) * float(np.sqrt(252.0))
+    calmar = 0.0 if max_dd == 0.0 else annual / abs(max_dd)
+    leakage = int(harness.allow_future_features or harness.data_sanitizer != "timestamp_guarded")
+    violations = leakage + int(not pi_pass) + int(harness.cost_accounting != "strict")
+    return PublicEvaluation(
+        cumulative_return=cumulative,
+        annualized_return=annual,
+        sharpe=float(sharpe),
+        max_drawdown=max_dd,
+        calmar=float(calmar),
+        sortino=float(sortino),
+        turnover=float(turnover.mean()),
+        cost_paid=float(cost.sum()),
+        leakage_violations=leakage,
+        pi_invariance_pass=bool(pi_pass),
+        constraint_violations=int(violations),
+        n_days=int(len(net)),
+    )
 
 
 def evaluate_public_config(

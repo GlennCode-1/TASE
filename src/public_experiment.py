@@ -13,8 +13,11 @@ from .public_task import (
     PublicHarnessConfig,
     base_public_harness,
     compute_target_weights,
+    compute_target_weight_matrix,
     evaluate_public_config,
+    evaluate_weight_matrix,
     future_return_independence_placebo,
+    public_feature_matrices,
     w_t_invariance_test,
 )
 
@@ -35,6 +38,7 @@ class PublicRunOutput:
     results_by_split: pd.DataFrame
     candidate_log: pd.DataFrame
     summary: pd.DataFrame
+    bootstrap: pd.DataFrame | None = None
 
 
 def _block_splits(n_blocks: int, validation_blocks: int, oos_blocks: int) -> list[tuple[list[int], list[int]]]:
@@ -51,12 +55,14 @@ def _safe_configs(base: PublicHarnessConfig, config: dict, budget: int) -> list[
     variants = []
     grid = product(
         ["strict", "ffill_one"],
-        ["fail_closed", "retry"],
-        ["normal", "verbose"],
-        [0.0, 0.02],
-        ["strict", "settlement_lag"],
+        ["fail_closed", "retry", "normal"],
+        ["minimal", "normal", "verbose"],
+        [0.0, 0.01, 0.02, 0.03, 0.05],
+        ["next_close", "settlement_lag", "strict"],
+        ["strict", "paranoid"],
+        ["keep", "tag"],
     )
-    for missing, flow, logging, floor, accounting in grid:
+    for missing, flow, logging, floor, accounting, audit, retention in grid:
         variants.append(
             base.with_patch(
                 {
@@ -65,6 +71,8 @@ def _safe_configs(base: PublicHarnessConfig, config: dict, budget: int) -> list[
                     "logging": logging,
                     "risk_floor": floor,
                     "execution_accounting": accounting,
+                    "audit_strictness": audit,
+                    "failed_run_retention": retention,
                 }
             )
         )
@@ -173,6 +181,32 @@ def _selection_objective(evaluation, harness: PublicHarnessConfig, n_trials: int
     return dsr - 0.5 * evaluation.constraint_violations - max(0.0, evaluation.turnover - 0.35)
 
 
+def bootstrap_summary(results: pd.DataFrame, n_bootstrap: int = 200, seed: int = 20260629) -> pd.DataFrame:
+    if results.empty:
+        return pd.DataFrame()
+    rng = np.random.default_rng(seed)
+    rows: list[dict] = []
+    for arm, group in results.groupby("arm", sort=False):
+        values = group["oos_sharpe"].dropna().to_numpy(dtype=float)
+        if values.size == 0:
+            continue
+        means = []
+        for _ in range(int(n_bootstrap)):
+            sample = rng.choice(values, size=values.size, replace=True)
+            means.append(float(sample.mean()))
+        rows.append(
+            {
+                "arm": arm,
+                "metric": "locked_sharpe",
+                "mean": float(values.mean()),
+                "ci_low": float(np.quantile(means, 0.025)),
+                "ci_high": float(np.quantile(means, 0.975)),
+                "n_bootstrap": int(n_bootstrap),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _passive_weights(features: pd.DataFrame, arm: str) -> pd.DataFrame:
     dates = sorted(features["date"].unique())
     tickers = sorted(features["ticker"].unique())
@@ -218,8 +252,12 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
     features = assign_time_blocks(features, int(cfg["selection_blocks"]), int(cfg["final_confirmation_months"]))
     cfg["effective_start_date"] = str(pd.Timestamp(features["date"].min()).date())
     cfg["effective_end_date"] = str(pd.Timestamp(features["date"].max()).date())
+    matrices = public_feature_matrices(features)
+    returns_matrix = np.asarray(matrices["return_1d"], dtype=float)
+    block_vector = np.asarray(matrices["block"])
     base = base_public_harness(cfg)
     reference_weights = compute_target_weights(features, base, cfg)
+    reference_matrix = compute_target_weight_matrix(matrices, base, cfg)
     splits = _block_splits(int(cfg["selection_blocks"]), int(cfg["validation_window_blocks"]), int(cfg["oos_window_blocks"]))
     budget = int(cfg["search_budget"])
     candidate_rows: list[dict] = []
@@ -227,6 +265,7 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
     weight_cache: dict[tuple[tuple[str, object], ...], pd.DataFrame] = {}
     eval_cache: dict[tuple[tuple[tuple[str, object], ...], tuple[int, ...]], object] = {}
     pi_cache: dict[tuple[tuple[str, object], ...], bool] = {}
+    weight_matrix_cache: dict[tuple[tuple[str, object], ...], np.ndarray] = {}
 
     def weights_for(harness: PublicHarnessConfig) -> pd.DataFrame:
         key = _harness_key(harness)
@@ -234,13 +273,19 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
             weight_cache[key] = compute_target_weights(features, harness, cfg)
         return weight_cache[key]
 
+    def weight_matrix_for(harness: PublicHarnessConfig) -> np.ndarray:
+        key = _harness_key(harness)
+        if key not in weight_matrix_cache:
+            weight_matrix_cache[key] = compute_target_weight_matrix(matrices, harness, cfg)
+        return weight_matrix_cache[key]
+
     def dates_key(dates: set[pd.Timestamp]) -> tuple[int, ...]:
         return tuple(sorted(pd.DatetimeIndex(pd.to_datetime(list(dates))).asi8.tolist()))
 
     def pi_pass_for(harness: PublicHarnessConfig) -> bool:
         key = _harness_key(harness)
         if key not in pi_cache:
-            pi_cache[key] = w_t_invariance_test(reference_weights, weights_for(harness))
+            pi_cache[key] = bool(np.allclose(reference_matrix, weight_matrix_for(harness), atol=1e-12))
             pi_cache[key] = pi_cache[key] and future_return_independence_placebo(features, harness, cfg)
         return pi_cache[key]
 
@@ -248,8 +293,16 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
         h_key = _harness_key(harness)
         e_key = (h_key, dates_key(dates))
         if e_key not in eval_cache:
-            eval_cache[e_key] = evaluate_public_config(
-                features, harness, cfg, dates, reference_weights, target_weights=weights_for(harness)
+            date_index = pd.DatetimeIndex(matrices["dates"])
+            allowed_index = pd.DatetimeIndex(pd.to_datetime(list(dates)))
+            mask = date_index.isin(allowed_index)
+            eval_cache[e_key] = evaluate_weight_matrix(
+                returns_matrix,
+                weight_matrix_for(harness),
+                np.asarray(mask, dtype=bool),
+                harness,
+                cfg,
+                pi_pass=bool(np.allclose(reference_matrix[mask], weight_matrix_for(harness)[mask], atol=1e-12)),
             )
         return eval_cache[e_key]
 
@@ -261,7 +314,6 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
                 candidates = _candidates_for_arm(arm, base, cfg, budget, seed)
                 scored = []
                 for idx, harness in enumerate(candidates):
-                    candidate_weights = weights_for(harness)
                     pi_pass = True
                     if arm in {"Constrained Safe Search", "Random Legal Patch", "TASE Typed Harness"}:
                         pi_pass = pi_pass_for(harness)
@@ -341,4 +393,5 @@ def run_public_toy(bundle: PublicDataBundle, config: dict, quick: bool = False) 
     summary.attrs["effective_start_date"] = cfg["effective_start_date"]
     summary.attrs["effective_end_date"] = cfg["effective_end_date"]
     summary.attrs["run_mode"] = "quick" if quick else "full"
-    return PublicRunOutput(results_by_split=results, candidate_log=candidate_log, summary=summary)
+    bootstrap = bootstrap_summary(results, int(cfg.get("bootstrap_samples", 200)))
+    return PublicRunOutput(results_by_split=results, candidate_log=candidate_log, summary=summary, bootstrap=bootstrap)

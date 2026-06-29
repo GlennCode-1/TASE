@@ -142,6 +142,11 @@ def load_or_download_public_data(config: dict, root: Path, quick: bool = False) 
 
     if processed_path.exists():
         processed = pd.read_csv(processed_path, parse_dates=["date"])
+        if raw_path.exists():
+            raw_for_log = pd.read_csv(raw_path, parse_dates=["date"])
+            _, missing_log = process_public_ohlcv(raw_for_log, config)
+        else:
+            processed, missing_log = process_public_ohlcv(processed, config)
     else:
         if raw_path.exists():
             raw = pd.read_csv(raw_path, parse_dates=["date"])
@@ -151,10 +156,9 @@ def load_or_download_public_data(config: dict, root: Path, quick: bool = False) 
         else:
             raw = download_public_ohlcv(config)
             raw.to_csv(raw_path, index=False)
-        processed, _ = process_public_ohlcv(raw, config)
+        processed, missing_log = process_public_ohlcv(raw, config)
         processed.to_csv(processed_path, index=False)
 
-    processed, missing_log = process_public_ohlcv(processed, config)
     if len(processed["ticker"].unique()) < int(config["min_assets"]):
         raise RuntimeError("fewer than min_assets have usable aligned data")
     return PublicDataBundle(
@@ -177,7 +181,12 @@ def process_public_ohlcv(raw: pd.DataFrame, config: dict) -> tuple[pd.DataFrame,
 
     counts = data.groupby("ticker")["date"].nunique().sort_values(ascending=False)
     min_assets = int(config["min_assets"])
-    keep = [ticker for ticker in config["universe"] if ticker in counts.index]
+    min_coverage = float(config.get("min_history_coverage", 0.0))
+    max_count = int(counts.max()) if not counts.empty else 0
+    required_count = int(np.floor(max_count * min_coverage)) if max_count else 0
+    keep = [ticker for ticker in config["universe"] if ticker in counts.index and int(counts[ticker]) >= required_count]
+    dropped = [ticker for ticker in config["universe"] if ticker in counts.index and ticker not in keep]
+    not_downloaded = [ticker for ticker in config["universe"] if ticker not in counts.index]
     if len(keep) < min_assets:
         raise RuntimeError(f"only {len(keep)} tickers downloaded; need at least {min_assets}")
     data = data[data["ticker"].isin(keep)].copy()
@@ -197,6 +206,15 @@ def process_public_ohlcv(raw: pd.DataFrame, config: dict) -> tuple[pd.DataFrame,
     observed_index = pd.MultiIndex.from_frame(data[["date", "ticker"]])
     missing_pairs = full_index.difference(observed_index)
     missing_log = pd.DataFrame(list(missing_pairs), columns=["date", "ticker"])
+    missing_log["reason"] = "missing_aligned_trading_day"
     if not missing_rows.empty:
-        missing_log = pd.concat([missing_log, missing_rows[["date", "ticker"]]], ignore_index=True)
-    return data[OHLCV_COLUMNS], missing_log.sort_values(["date", "ticker"]).reset_index(drop=True)
+        raw_missing = missing_rows[["date", "ticker"]].copy()
+        raw_missing["reason"] = "missing_adjusted_close"
+        missing_log = pd.concat([missing_log, raw_missing], ignore_index=True)
+    if dropped:
+        dropped_log = pd.DataFrame({"date": [pd.NaT] * len(dropped), "ticker": dropped, "reason": "insufficient_history"})
+        missing_log = pd.concat([missing_log, dropped_log], ignore_index=True)
+    if not_downloaded:
+        not_downloaded_log = pd.DataFrame({"date": [pd.NaT] * len(not_downloaded), "ticker": not_downloaded, "reason": "no_downloaded_data"})
+        missing_log = pd.concat([missing_log, not_downloaded_log], ignore_index=True)
+    return data[OHLCV_COLUMNS], missing_log.sort_values(["ticker", "date"], na_position="first").reset_index(drop=True)
