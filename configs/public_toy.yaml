@@ -1,0 +1,51 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - EFA
+  - EEM
+  - TLT
+  - IEF
+  - GLD
+  - VNQ
+  - XLF
+  - XLK
+  - XLE
+  - XLI
+  - XLU
+  - XLP
+  - XLY
+start_date: "2007-01-01"
+end_date: "2024-12-31"
+min_assets: 10
+raw_data_path: data/raw/public_toy_ohlcv.csv
+processed_data_path: data/processed/public_toy_prices.csv
+download_source: yfinance
+allow_synthetic_fallback: false
+
+selection_blocks: 8
+final_confirmation_months: 12
+validation_window_blocks: 3
+oos_window_blocks: 1
+n_seeds: 1
+quick_n_seeds: 1
+search_budget: 12
+quick_search_budget: 8
+candidate_per_round: 4
+
+initial_capital: 1.0
+rebalance: W-FRI
+top_k: 4
+momentum_window: 20
+volatility_window: 20
+volatility_penalty: 0.25
+threshold: -999.0
+transaction_cost_bps: 5
+max_weight: 0.35
+risk_floor: 0.0
+
+headline:
+  pbo_weight: 1.0
+  degradation_weight: 1.0
+  dsr_weight: 0.5
+  violation_weight: 1.0

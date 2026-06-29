@@ -560,3 +560,179 @@ def write_stage3_reports(results: pd.DataFrame, summary: pd.DataFrame, config: d
     technical_path.write_text(technical, encoding="utf-8")
     plain_path.write_text(plain, encoding="utf-8")
     return technical_path, plain_path
+
+
+def interpret_public_toy_results(summary: pd.DataFrame) -> dict[str, bool | str | float]:
+    free = _arm_row(summary, "MetaHarness Unconstrained")
+    fixed = _arm_row(summary, "Constrained Safe Search")
+    random = _arm_row(summary, "Random Legal Patch")
+    tase = _arm_row(summary, "TASE Typed Harness")
+
+    free_viol = float(free["constraint_violation_count"])
+    tase_viol = float(tase["constraint_violation_count"])
+    h1 = (
+        float(free["pbo_estimate"]) >= float(tase["pbo_estimate"])
+        and float(free["validation_to_oos_degradation"]) > float(tase["validation_to_oos_degradation"])
+        and float(free["is_oos_rank_correlation"]) <= float(tase["is_oos_rank_correlation"]) + 1e-12
+        and free_viol > tase_viol
+    )
+    h2 = (
+        float(tase["leakage_audit_pass_rate"]) >= float(free["leakage_audit_pass_rate"])
+        and float(tase["pi_invariance_pass_rate"]) >= float(free["pi_invariance_pass_rate"])
+        and tase_viol < free_viol
+    )
+    h3 = (
+        float(tase["pbo_estimate"]) < float(fixed["pbo_estimate"])
+        or float(tase["deflated_sharpe_ratio"]) > float(fixed["deflated_sharpe_ratio"])
+    )
+    h4 = (
+        (
+            float(tase["pbo_estimate"]) < float(random["pbo_estimate"])
+            or float(tase["deflated_sharpe_ratio"]) > float(random["deflated_sharpe_ratio"])
+            or float(tase["validation_to_oos_degradation"]) < float(random["validation_to_oos_degradation"])
+        )
+        and float(tase["constraint_violation_count"]) <= float(random["constraint_violation_count"]) + 1e-12
+    )
+    h5 = h1 and h2 and h4
+
+    if h1 and h2 and h3 and h4:
+        recommendation = "继续，但只扩大到一个小型 public-data robustness sprint。"
+    elif h1 and h2 and h4 and not h3:
+        recommendation = "继续改 TASE 选择规则，暂不扩大规模。"
+    elif h1 and h2:
+        recommendation = "降级为约束有效性结果，先别主张自我改进。"
+    else:
+        recommendation = "暂停扩大实验，先修 public toy 设计或数据质量。"
+
+    return {
+        "h1": h1,
+        "h2": h2,
+        "h3": h3,
+        "h4": h4,
+        "h5": h5,
+        "recommendation": recommendation,
+        "free_pbo": float(free["pbo_estimate"]),
+        "tase_pbo": float(tase["pbo_estimate"]),
+        "fixed_pbo": float(fixed["pbo_estimate"]),
+        "random_pbo": float(random["pbo_estimate"]),
+        "free_degradation": float(free["validation_to_oos_degradation"]),
+        "tase_degradation": float(tase["validation_to_oos_degradation"]),
+        "tase_dsr": float(tase["deflated_sharpe_ratio"]),
+        "fixed_dsr": float(fixed["deflated_sharpe_ratio"]),
+        "random_dsr": float(random["deflated_sharpe_ratio"]),
+    }
+
+
+def build_public_toy_technical_report(
+    results: pd.DataFrame, candidate_log: pd.DataFrame, summary: pd.DataFrame, config: dict
+) -> str:
+    interp = interpret_public_toy_results(summary)
+    metrics_table = summary.to_markdown(index=False)
+    candidate_counts = candidate_log.groupby("arm")["candidate_id"].nunique().to_markdown()
+    run_mode = "quick smoke" if config.get("run_mode") == "quick" else "full"
+    effective_start = config.get("effective_start_date", config["start_date"])
+    effective_end = config.get("effective_end_date", config["end_date"])
+
+    return f"""# T.A.S.E Public ETF Toy Report
+
+## Purpose
+
+This public-data toy task does not test live profitability. It asks whether finance-typed harness reconstruction reduces backtest-overfitting risk on a fixed ETF OHLCV universe under equal selection budgets.
+
+## Data And Task
+
+- Universe: {", ".join(config["universe"])}
+- Date request: {config["start_date"]} to {config["end_date"]}
+- Run mode: {run_mode}
+- Effective evaluation window: {effective_start} to {effective_end}
+- Task: long-only weekly ETF allocation, top-k equal weight, adjusted close, transaction costs, no leverage, no shorting.
+- Fixed strategy pi: lagged 20-day momentum minus lagged 20-day volatility penalty.
+- TASE patches must preserve pre-cost target weights and pass feature-lag, pi-invariance, and future-return placebo checks.
+
+## Arms
+
+- MetaHarness Unconstrained: same budget, broader harness changes, basic audit only.
+- Constrained Safe Search: same-budget safe configuration search, no meta proposer.
+- Random Legal Patch: same legal TASE space, random choice.
+- TASE Typed Harness: typed harness reconstruction with pi-invariance gates.
+- Lightweight Strategy Evolution: small strategy-parameter search with fixed harness.
+- SHARP-style Policy Baseline: bounded condition-action policy tuning.
+- Passive baselines: equal-weight buy-and-hold and 60/40 proxy.
+
+## Candidate Counts
+
+{candidate_counts}
+
+## Headline Metrics
+
+{metrics_table}
+
+## H1-H5 Judgment
+
+- H1 supported: {interp["h1"]}
+- H2 supported: {interp["h2"]}
+- H3 supported: {interp["h3"]}
+- H4 supported: {interp["h4"]}
+- H5 supported: {interp["h5"]}
+
+## Key Comparisons
+
+- Unconstrained PBO: {_fmt(float(interp["free_pbo"]))}; TASE PBO: {_fmt(float(interp["tase_pbo"]))}
+- Unconstrained degradation: {_fmt(float(interp["free_degradation"]))}; TASE degradation: {_fmt(float(interp["tase_degradation"]))}
+- TASE DSR: {_fmt(float(interp["tase_dsr"]))}; constrained-safe DSR: {_fmt(float(interp["fixed_dsr"]))}; random-legal DSR: {_fmt(float(interp["random_dsr"]))}
+
+## Recommendation
+
+{interp["recommendation"]}
+"""
+
+
+def build_public_toy_plain_chinese_summary(summary: pd.DataFrame) -> str:
+    interp = interpret_public_toy_results(summary)
+    free = _arm_row(summary, "MetaHarness Unconstrained")
+    fixed = _arm_row(summary, "Constrained Safe Search")
+    random = _arm_row(summary, "Random Legal Patch")
+    tase = _arm_row(summary, "TASE Typed Harness")
+
+    h = lambda key: "支持" if bool(interp[key]) else "暂不支持"
+    mode_text = "这次是 quick smoke，不是正式完整跑。" if summary.attrs.get("run_mode") == "quick" else "这次是完整配置跑。"
+    random_sentence = (
+        "和随机合法修改相比，TASE 这次更稳，说明选择改什么有价值。"
+        if bool(interp["h4"])
+        else "和随机合法修改相比，TASE 这次没有拉开差距，所以还不能说选择改什么已经带来额外价值。"
+    )
+    return f"""# 大白话实验结论
+
+## 这次想验证什么
+
+我们不再用假市场，而是用真实 ETF 历史数据。我们想看：自由改交易流程的系统是不是仍然容易在验证阶段看起来很好，但换到没参与选择的时间段就变差；受约束的自我改进是不是更稳；它是不是比“同样预算下只挑安全配置”和“随机合法修改”更有价值。
+
+## 结果怎么样
+
+{mode_text}这次重点不是谁收益最高，而是谁更不容易把验证阶段当成答案本。自由修改组的过拟合概率估计是 {_fmt(float(free["pbo_estimate"]))}，TASE 组是 {_fmt(float(tase["pbo_estimate"]))}。自由修改组从验证到后续时间段的退化是 {_fmt(float(free["validation_to_oos_degradation"]))}，TASE 是 {_fmt(float(tase["validation_to_oos_degradation"]))}。TASE 的规则检查通过率更高，说明它更少靠偷看未来或改变原策略来变好。{random_sentence}和同预算安全配置搜索相比，是否有额外价值要按 H3 结果判断。
+
+## 对应哪条假设
+
+H1：{h("h1")}。自由修改更容易出现验证好、后面变差。
+H2：{h("h2")}。金融约束能减少违规。
+H3：{h("h3")}。TASE 是否超过同预算安全配置搜索。
+H4：{h("h4")}。TASE 是否好于随机合法修改。
+H5：{h("h5")}。真实数据是否和假数据方向一致。
+
+## 下一步
+
+{interp["recommendation"]}
+"""
+
+
+def write_public_toy_reports(
+    results: pd.DataFrame, candidate_log: pd.DataFrame, summary: pd.DataFrame, config: dict, reports_dir: Path
+) -> tuple[Path, Path]:
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    technical = build_public_toy_technical_report(results, candidate_log, summary, config)
+    plain = build_public_toy_plain_chinese_summary(summary)
+    technical_path = reports_dir / "public_toy_report.md"
+    plain_path = reports_dir / "plain_chinese_summary_public_toy.md"
+    technical_path.write_text(technical, encoding="utf-8")
+    plain_path.write_text(plain, encoding="utf-8")
+    return technical_path, plain_path

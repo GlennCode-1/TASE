@@ -27,3 +27,21 @@ python scripts/run_killtest.py --config configs/killtest.yaml --n-seeds 1 --patc
 - `outputs/summary_metrics.csv`
 - `reports/killtest_report.md`
 - `reports/plain_chinese_summary.md`
+
+## Public ETF Toy Task
+
+The public-data toy task is a small robustness check, not a profitability claim. It compares equal-budget harness searches on a fixed ETF universe and headlines PBO, deflated Sharpe, validation-to-OOS degradation, leakage audits, and pi-invariance audits.
+
+```bash
+python scripts/run_public_toy.py --config configs/public_toy.yaml --quick
+python scripts/run_public_toy.py --config configs/public_toy.yaml
+```
+
+Outputs:
+
+- `outputs/public_toy_results_by_split.csv`
+- `outputs/public_toy_candidate_log.csv`
+- `outputs/public_toy_summary_metrics.csv`
+- `outputs/public_toy_missing_data_log.csv`
+- `reports/public_toy_report.md`
+- `reports/plain_chinese_summary_public_toy.md`
