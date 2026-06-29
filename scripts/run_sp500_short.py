@@ -50,13 +50,25 @@ def main() -> None:
     checkpoint_candidates = checkpoints_dir / f"sp500_short_{suffix}_candidate_log.csv"
     checkpoint_summary = checkpoints_dir / f"sp500_short_{suffix}_summary_metrics.csv"
     checkpoint_paired = checkpoints_dir / f"sp500_short_{suffix}_paired_bootstrap.csv"
+    checkpoint_valid_only = checkpoints_dir / f"sp500_short_{suffix}_valid_only_summary.csv"
+    checkpoint_invalid_high = checkpoints_dir / f"sp500_short_{suffix}_invalid_high_score_log.csv"
     checkpoint_exclusion = checkpoints_dir / f"sp500_short_{suffix}_exclusion_log.csv"
 
-    if args.resume and checkpoint_results.exists() and checkpoint_candidates.exists() and checkpoint_summary.exists():
+    can_resume = (
+        args.resume
+        and checkpoint_results.exists()
+        and checkpoint_candidates.exists()
+        and checkpoint_summary.exists()
+        and checkpoint_valid_only.exists()
+        and checkpoint_invalid_high.exists()
+    )
+    if can_resume:
         results = pd.read_csv(checkpoint_results)
         candidates = pd.read_csv(checkpoint_candidates)
         summary = pd.read_csv(checkpoint_summary)
         paired = pd.read_csv(checkpoint_paired) if checkpoint_paired.exists() else pd.DataFrame()
+        valid_only = pd.read_csv(checkpoint_valid_only)
+        invalid_high = pd.read_csv(checkpoint_invalid_high)
         exclusion = pd.read_csv(checkpoint_exclusion) if checkpoint_exclusion.exists() else pd.DataFrame()
         bundle = load_or_download_sp500_data(config, ROOT, quick=args.quick, refresh_constituents=args.refresh_constituents)
     else:
@@ -66,11 +78,15 @@ def main() -> None:
         candidates = output.candidate_log
         summary = output.summary
         paired = output.paired_bootstrap
+        valid_only = output.valid_only_summary
+        invalid_high = output.invalid_high_score_log
         exclusion = output.exclusion_log
         results.to_csv(checkpoint_results, index=False)
         candidates.to_csv(checkpoint_candidates, index=False)
         summary.to_csv(checkpoint_summary, index=False)
         paired.to_csv(checkpoint_paired, index=False)
+        valid_only.to_csv(checkpoint_valid_only, index=False)
+        invalid_high.to_csv(checkpoint_invalid_high, index=False)
         exclusion.to_csv(checkpoint_exclusion, index=False)
 
     report_config = dict(config)
@@ -84,18 +100,25 @@ def main() -> None:
     candidates.to_csv(outputs_dir / "sp500_short_candidate_log.csv", index=False)
     summary.to_csv(outputs_dir / "sp500_short_summary_metrics.csv", index=False)
     paired.to_csv(outputs_dir / "sp500_short_paired_bootstrap.csv", index=False)
+    valid_only.to_csv(outputs_dir / "sp500_short_valid_only_summary.csv", index=False)
+    invalid_high.to_csv(outputs_dir / "sp500_short_invalid_high_score_log.csv", index=False)
     bundle.missing_log.to_csv(outputs_dir / "sp500_short_missing_data_log.csv", index=False)
     exclusion.to_csv(outputs_dir / "sp500_short_exclusion_log.csv", index=False)
-    technical_path, plain_path = write_sp500_short_reports(results, candidates, summary, paired, report_config, run_root / "reports")
+    technical_path, plain_path, reinterpretation_path = write_sp500_short_reports(
+        results, candidates, summary, paired, report_config, run_root / "reports", valid_only, invalid_high
+    )
     for path in [
         outputs_dir / "sp500_short_results_by_split.csv",
         outputs_dir / "sp500_short_candidate_log.csv",
         outputs_dir / "sp500_short_summary_metrics.csv",
         outputs_dir / "sp500_short_paired_bootstrap.csv",
+        outputs_dir / "sp500_short_valid_only_summary.csv",
+        outputs_dir / "sp500_short_invalid_high_score_log.csv",
         outputs_dir / "sp500_short_missing_data_log.csv",
         outputs_dir / "sp500_short_exclusion_log.csv",
         technical_path,
         plain_path,
+        reinterpretation_path,
     ]:
         print(f"Wrote {path}")
 

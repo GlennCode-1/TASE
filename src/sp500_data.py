@@ -111,6 +111,26 @@ def make_offline_stock_fixture(config: dict, n_assets: int | None = None) -> tup
     return pd.DataFrame(rows, columns=OHLCV_COLUMNS), pd.DataFrame(constituents)
 
 
+def _finalize_missing_log(missing_log: pd.DataFrame, config: dict) -> pd.DataFrame:
+    columns = ["date", "event_start_date", "event_end_date", "ticker", "event_type", "reason", "date_status", "missing_ratio"]
+    if missing_log.empty:
+        return pd.DataFrame(columns=columns)
+    out = missing_log.copy()
+    if "missing_ratio" not in out.columns:
+        out["missing_ratio"] = np.nan
+    out["date"] = pd.to_datetime(out.get("date"), errors="coerce")
+    known = out["date"].notna()
+    out["event_start_date"] = pd.NaT
+    out["event_end_date"] = pd.NaT
+    out.loc[known, "event_start_date"] = out.loc[known, "date"]
+    out.loc[known, "event_end_date"] = out.loc[known, "date"]
+    out.loc[~known, "event_start_date"] = pd.Timestamp(config["start_date"])
+    out.loc[~known, "event_end_date"] = pd.Timestamp(config["end_date"])
+    out["event_type"] = out["reason"].astype(str)
+    out["date_status"] = np.where(known, "KNOWN", "UNKNOWN")
+    return out.reindex(columns=columns)
+
+
 def process_sp500_ohlcv(raw: pd.DataFrame, constituents: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     data = raw.copy()
     data["date"] = pd.to_datetime(data["date"])
@@ -155,8 +175,7 @@ def process_sp500_ohlcv(raw: pd.DataFrame, constituents: pd.DataFrame, config: d
     corporate["reason"] = "corporate_action_anomaly"
     logs = [pd.DataFrame(log_rows), missing_rows, bad, corporate]
     missing_log = pd.concat([frame for frame in logs if not frame.empty], ignore_index=True)
-    if missing_log.empty:
-        missing_log = pd.DataFrame(columns=["date", "ticker", "reason", "missing_ratio"])
+    missing_log = _finalize_missing_log(missing_log, config)
     return data[OHLCV_COLUMNS].sort_values(["date", "ticker"]).reset_index(drop=True), missing_log.sort_values(["ticker", "date"], na_position="first").reset_index(drop=True)
 
 

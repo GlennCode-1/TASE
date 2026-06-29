@@ -8,9 +8,10 @@ import pandas as pd
 import yaml
 
 from src.features import assign_time_blocks, feature_lag_audit
-from src.reporting import build_sp500_short_plain_chinese_summary
+from src.reporting import build_sp500_short_plain_chinese_summary, build_sp500_short_technical_report
 from src.sp500_data import make_offline_stock_fixture, process_sp500_ohlcv, StockDataBundle
 from src.sp500_universe import _to_yfinance_symbol
+import src.stock_experiment as stock_experiment
 from src.stock_experiment import CORE_ARMS, run_sp500_short
 from src.stock_task import (
     base_stock_harness,
@@ -171,3 +172,133 @@ def test_checkpoint_resume_sp500_short(tmp_path: Path) -> None:
     subprocess.run(["python", "scripts/run_sp500_short.py", "--config", str(cfg_path), "--quick"], check=True, timeout=90, env=env)
     subprocess.run(["python", "scripts/run_sp500_short.py", "--config", str(cfg_path), "--quick", "--resume"], check=True, timeout=90, env=env)
     assert (run_root / "outputs/checkpoints/sp500_short_quick_results_by_split.csv").exists()
+
+
+
+def test_no_valid_candidate_does_not_fallback_to_invalid(monkeypatch) -> None:
+    cfg = _config()
+    original = stock_experiment.candidates_for_arm
+
+    def only_invalid_for_unconstrained(arm, base, config, budget, seed):
+        if arm == "Unconstrained Search":
+            return [base.with_patch({"allow_future_features": True, "allow_strategy_change": True}) for _ in range(budget)]
+        return original(arm, base, config, budget, seed)
+
+    monkeypatch.setattr(stock_experiment, "candidates_for_arm", only_invalid_for_unconstrained)
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    rows = output.results_by_split[output.results_by_split["arm"] == "Unconstrained Search"]
+    assert set(rows["selection_status"]) == {"NO_VALID_CANDIDATE"}
+    assert rows["candidate_id"].isna().all()
+
+
+def test_no_valid_candidate_locked_metrics_are_na(monkeypatch) -> None:
+    cfg = _config()
+    original = stock_experiment.candidates_for_arm
+
+    def only_invalid_for_unconstrained(arm, base, config, budget, seed):
+        if arm == "Unconstrained Search":
+            return [base.with_patch({"allow_future_features": True, "allow_strategy_change": True}) for _ in range(budget)]
+        return original(arm, base, config, budget, seed)
+
+    monkeypatch.setattr(stock_experiment, "candidates_for_arm", only_invalid_for_unconstrained)
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    rows = output.results_by_split[output.results_by_split["arm"] == "Unconstrained Search"]
+    assert rows["oos_sharpe"].isna().all()
+    assert rows["oos_cumulative_return"].isna().all()
+
+
+def test_unconstrained_headline_uses_valid_only_cells() -> None:
+    cfg = _config()
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    selected = output.results_by_split[output.results_by_split["selection_status"] == "VALID_SELECTED"]
+    assert selected["valid_for_selection"].all()
+    assert not output.summary["locked_sharpe"].isna().all()
+    assert "valid_selected_cells" in output.summary.columns
+    assert "no_valid_candidate_cells" in output.summary.columns
+
+
+def test_invalid_high_score_logged_but_not_selected() -> None:
+    cfg = _config()
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    assert not output.invalid_high_score_log.empty
+    selected_ids = set(output.results_by_split["candidate_id"].dropna())
+    invalid_ids = set(output.invalid_high_score_log["candidate_id"].dropna())
+    assert selected_ids.isdisjoint(invalid_ids)
+    assert {"validation_score", "locked_score_if_computed", "why_not_selected"}.issubset(output.invalid_high_score_log.columns)
+
+
+def test_report_mentions_tase_constrained_identical_when_ci_zero() -> None:
+    cfg = _config()
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    paired = pd.DataFrame(
+        [
+            {
+                "comparison": "TASE Typed Harness - Constrained Safe Search",
+                "metric": "oos_sharpe",
+                "mean_diff": 0.0,
+                "ci_low": 0.0,
+                "ci_high": 0.0,
+                "n_pairs": 2,
+                "block_size": 1,
+            },
+            {
+                "comparison": "TASE Typed Harness - Random Legal Patch",
+                "metric": "oos_sharpe",
+                "mean_diff": -0.001,
+                "ci_low": -0.002,
+                "ci_high": -0.0001,
+                "n_pairs": 2,
+                "block_size": 1,
+            },
+        ]
+    )
+    text = build_sp500_short_technical_report(
+        output.results_by_split, output.candidate_log, output.summary, paired, cfg, output.valid_only_summary, output.invalid_high_score_log
+    )
+    assert "TASE and Constrained Safe Search are identical" in text
+    assert "CI is [0,0]" in text
+
+
+def test_report_mentions_tase_random_slightly_negative_when_ci_negative() -> None:
+    cfg = _config()
+    output = run_sp500_short(_bundle(cfg), cfg, quick=True)
+    paired = pd.DataFrame(
+        [
+            {
+                "comparison": "TASE Typed Harness - Constrained Safe Search",
+                "metric": "oos_sharpe",
+                "mean_diff": 0.0,
+                "ci_low": 0.0,
+                "ci_high": 0.0,
+                "n_pairs": 2,
+                "block_size": 1,
+            },
+            {
+                "comparison": "TASE Typed Harness - Random Legal Patch",
+                "metric": "oos_sharpe",
+                "mean_diff": -0.001,
+                "ci_low": -0.002,
+                "ci_high": -0.0001,
+                "n_pairs": 2,
+                "block_size": 1,
+            },
+        ]
+    )
+    text = build_sp500_short_technical_report(
+        output.results_by_split, output.candidate_log, output.summary, paired, cfg, output.valid_only_summary, output.invalid_high_score_log
+    )
+    assert "directionally slightly negative" in text
+    assert "economically small" in text
+
+
+def test_missing_data_log_has_date_or_date_status() -> None:
+    cfg = _config()
+    bundle = _bundle(cfg)
+    log = bundle.missing_log
+    required = {"event_start_date", "event_end_date", "event_type", "date_status"}
+    assert required.issubset(log.columns)
+    assert log["date_status"].isin(["KNOWN", "UNKNOWN"]).all()
+    unknown = log[log["date"].isna()]
+    assert unknown.empty or (unknown["date_status"] == "UNKNOWN").all()
+    assert log["event_start_date"].notna().all()
+    assert log["event_end_date"].notna().all()

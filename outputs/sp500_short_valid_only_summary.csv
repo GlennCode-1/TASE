@@ -1,0 +1,6 @@
+arm,valid_selected_cells,no_valid_candidate_cells,valid_only_locked_sharpe_mean,valid_only_locked_cumulative_return_mean,valid_only_constraint_violation_mean
+Unconstrained Search,6,24,0.7422776418749536,0.06363732999666326,0.0
+Constrained Safe Search,30,0,0.7304239075729979,0.06084457854908406,0.0
+Random Legal Patch,30,0,0.732794654433389,0.06217839816947715,0.0
+TASE Typed Harness,30,0,0.7304239075729979,0.06084457854908406,0.0
+Lightweight Strategy Tuning,0,30,,,

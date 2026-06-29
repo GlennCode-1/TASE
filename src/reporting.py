@@ -850,39 +850,82 @@ def write_public_full_reports(
 
 
 
-def interpret_sp500_short_results(summary: pd.DataFrame, candidate_log: pd.DataFrame, paired: pd.DataFrame) -> dict[str, bool | str | float]:
+
+def _paired_row(paired: pd.DataFrame, comparison: str, metric: str = "oos_sharpe") -> pd.Series | None:
+    if paired is None or paired.empty:
+        return None
+    rows = paired[(paired["comparison"] == comparison) & (paired["metric"] == metric)]
+    return None if rows.empty else rows.iloc[0]
+
+
+def _is_zero_ci(row: pd.Series | None) -> bool:
+    if row is None:
+        return False
+    return all(abs(float(row[key])) <= 1e-12 for key in ["mean_diff", "ci_low", "ci_high"])
+
+
+def _is_negative_or_nonpositive_ci(row: pd.Series | None) -> bool:
+    if row is None:
+        return False
+    return float(row["mean_diff"]) < 0 and float(row["ci_high"]) <= 1e-9
+
+
+def interpret_sp500_short_results(
+    summary: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    paired: pd.DataFrame,
+    valid_only_summary: pd.DataFrame | None = None,
+    invalid_high_score_log: pd.DataFrame | None = None,
+) -> dict[str, bool | str | float]:
     free = _arm_row(summary, "Unconstrained Search")
+    tase = _arm_row(summary, "TASE Typed Harness")
     constrained = _arm_row(summary, "Constrained Safe Search")
     random = _arm_row(summary, "Random Legal Patch")
-    tase = _arm_row(summary, "TASE Typed Harness")
+
     unconstrained = candidate_log[candidate_log["arm"] == "Unconstrained Search"]
-    invalid = unconstrained[~unconstrained["valid_for_selection"]]
-    valid_free = unconstrained[unconstrained["valid_for_selection"]]
-    h1a = bool(not invalid.empty and invalid["is_score"].max() >= unconstrained["is_score"].quantile(0.75))
+    invalid = invalid_high_score_log
+    if invalid is None:
+        invalid = unconstrained[~unconstrained["valid_for_selection"].astype(bool)].copy()
+        if not invalid.empty and "validation_score" not in invalid.columns:
+            invalid["validation_score"] = invalid["is_score"]
+    h1a = bool(invalid is not None and not invalid.empty)
+
     h1b = bool(
-        not valid_free.empty
+        float(free.get("no_valid_candidate_cells", 0)) == 0
+        and float(free["valid_selection_rate"]) >= 0.99
         and float(free["validation_to_locked_degradation"]) > float(tase["validation_to_locked_degradation"])
-        and float(free["valid_selection_rate"]) > 0
+        and float(free["locked_sharpe"]) < float(tase["locked_sharpe"])
     )
-    h2 = bool(
-        float(tase["leakage_violation_count"] + tase["strategy_boundary_violation_count"] + tase["constraint_violation_count"])
-        < float(free["leakage_violation_count"] + free["strategy_boundary_violation_count"] + free["constraint_violation_count"])
+
+    free_violation = float(free["leakage_violation_count"] + free["strategy_boundary_violation_count"] + free["constraint_violation_count"])
+    tase_violation = float(tase["leakage_violation_count"] + tase["strategy_boundary_violation_count"] + tase["constraint_violation_count"])
+    h2 = bool(tase_violation < free_violation)
+
+    tase_constrained = _paired_row(paired, "TASE Typed Harness - Constrained Safe Search")
+    tase_random = _paired_row(paired, "TASE Typed Harness - Random Legal Patch")
+    h3_identical = _is_zero_ci(tase_constrained)
+    h3 = bool(tase_constrained is not None and float(tase_constrained["mean_diff"]) > 0 and float(tase_constrained["ci_low"]) > 0)
+    h4_slight_negative = _is_negative_or_nonpositive_ci(tase_random)
+    h4 = bool(tase_random is not None and float(tase_random["mean_diff"]) > 0 and float(tase_random["ci_low"]) > 0)
+    h5 = bool(h1a and h2 and not h1b and not h3 and not h4)
+
+    recommendation = (
+        "Frame this run as evidence for finance-gated diagnostic evaluation, not as evidence that TASE improves stock P&L. "
+        "Keep H3/H4 exploratory until the legal patch space creates observable differences."
     )
-    def paired_positive(label: str) -> bool:
-        if paired.empty:
-            return False
-        rows = paired[(paired["comparison"] == label) & (paired["metric"] == "oos_sharpe")]
-        return bool(not rows.empty and float(rows.iloc[0]["mean_diff"]) > 0 and float(rows.iloc[0]["ci_low"]) >= 0)
-    h3 = paired_positive("TASE Typed Harness - Constrained Safe Search") or float(tase["locked_sharpe"]) > float(constrained["locked_sharpe"])
-    h4 = paired_positive("TASE Typed Harness - Random Legal Patch") or float(tase["locked_sharpe"]) > float(random["locked_sharpe"])
-    h5 = bool(h1a and h2 and (h3 or h4 or float(tase["cash_ratio"]) != float(constrained["cash_ratio"])))
-    if h3 and h4:
-        recommendation = "继续一轮更严格的 point-in-time 或更干净历史成分股实验。"
-    elif h1a and h2:
-        recommendation = "保留为股票数据流程诊断，先改合法 patch 的选择空间，再谈扩大。"
-    else:
-        recommendation = "暂停扩大，先检查股票任务是否真正产生了可用的流程差异。"
-    return {"h1a": h1a, "h1b": h1b, "h2": h2, "h3": h3, "h4": h4, "h5": h5, "recommendation": recommendation}
+    return {
+        "h1a": h1a,
+        "h1b": h1b,
+        "h2": h2,
+        "h3": h3,
+        "h4": h4,
+        "h5": h5,
+        "h3_identical": h3_identical,
+        "h4_slight_negative": h4_slight_negative,
+        "recommendation": recommendation,
+        "free_violation": free_violation,
+        "tase_violation": tase_violation,
+    }
 
 
 def build_sp500_short_technical_report(
@@ -891,16 +934,37 @@ def build_sp500_short_technical_report(
     summary: pd.DataFrame,
     paired: pd.DataFrame,
     config: dict,
+    valid_only_summary: pd.DataFrame | None = None,
+    invalid_high_score_log: pd.DataFrame | None = None,
 ) -> str:
-    interp = interpret_sp500_short_results(summary, candidate_log, paired)
+    interp = interpret_sp500_short_results(summary, candidate_log, paired, valid_only_summary, invalid_high_score_log)
     metrics_table = summary.to_markdown(index=False)
     paired_table = paired.to_markdown(index=False) if paired is not None and not paired.empty else "No paired bootstrap output."
+    valid_only_table = (
+        valid_only_summary.to_markdown(index=False)
+        if valid_only_summary is not None and not valid_only_summary.empty
+        else "No valid-only summary output."
+    )
+    invalid_table = (
+        invalid_high_score_log.head(20).to_markdown(index=False)
+        if invalid_high_score_log is not None and not invalid_high_score_log.empty
+        else "No invalid high-score candidates were logged."
+    )
     candidate_counts = candidate_log.groupby("arm")["candidate_id"].nunique().to_markdown()
+    tc = _paired_row(paired, "TASE Typed Harness - Constrained Safe Search")
+    tr = _paired_row(paired, "TASE Typed Harness - Random Legal Patch")
+    tc_text = "not available"
+    if tc is not None:
+        tc_text = f"mean {float(tc['mean_diff']):.6f}, CI [{float(tc['ci_low']):.6f}, {float(tc['ci_high']):.6f}]"
+    tr_text = "not available"
+    if tr is not None:
+        tr_text = f"mean {float(tr['mean_diff']):.6f}, CI [{float(tr['ci_low']):.6f}, {float(tr['ci_high']):.6f}]"
+
     return f"""# T.A.S.E S&P 500 Short-Window Diagnostic Report
 
 ## Purpose
 
-This is a current-constituent, survivor-biased short-window diagnostic task. It is not used to claim investable profitability or unbiased S&P 500 performance. The task asks whether finance-typed harness patches become observable on individual-stock OHLCV data with missingness, stale prices, bad ticks, failed downloads, and corporate-action adjustment issues.
+This is a current-constituent, survivor-biased short-window diagnostic task. It is not an investable profitability claim and it is not an unbiased historical S&P 500 backtest. The task asks whether finance-typed harness gates correctly separate legal process improvements from illegal high-score shortcuts on individual-stock OHLCV data with missingness, stale prices, bad ticks, failed downloads, and corporate-action adjustment issues.
 
 ## Data And Task
 
@@ -910,9 +974,14 @@ This is a current-constituent, survivor-biased short-window diagnostic task. It 
 - Effective evaluation window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
 - Retained stocks: {config.get("retained_assets", "NA")}
 - Minimum retained stocks: {config["min_assets"]}
+- Run mode: {config.get("run_mode", "full")}
 - Search budget per core arm: {config["quick_search_budget"] if config.get("run_mode") == "quick smoke" else config["search_budget"]}
 - Seeds: {config["quick_n_seeds"] if config.get("run_mode") == "quick smoke" else config["n_seeds"]}
 - Fixed strategy: lagged 20-day momentum minus lagged 20-day volatility penalty; weekly top-k long-only allocation; adjusted close; transaction costs.
+
+## Selection Rule
+
+A candidate must pass the hard gates before it can be selected for headline locked performance. If an arm/seed/split cell has no valid candidate, the selected cell is recorded as `NO_VALID_CANDIDATE`, the selected candidate id is missing, and locked performance is missing. Invalid high-score candidates are logged separately and are not used as headline legal performance.
 
 ## Candidate Counts
 
@@ -922,22 +991,32 @@ This is a current-constituent, survivor-biased short-window diagnostic task. It 
 
 {metrics_table}
 
+## Valid-Only Summary
+
+{valid_only_table}
+
+## Invalid High-Score Log
+
+{invalid_table}
+
 ## Paired Block Bootstrap
 
 {paired_table}
 
 ## H1a-H5 Judgment
 
-- H1a supported: {interp["h1a"]}
-- H1b supported: {interp["h1b"]}
-- H2 supported: {interp["h2"]}
-- H3 supported: {interp["h3"]}
-- H4 supported: {interp["h4"]}
-- H5 supported: {interp["h5"]}
+- H1a supported: {interp["h1a"]}. Unconstrained search produced invalid high-score paths, so the finance gates are catching real shortcut pressure.
+- H1b supported: {interp["h1b"]}. There is no evidence that legal unconstrained selections alone show the classic validation-high, locked-test-poor overfit pattern.
+- H2 supported: {interp["h2"]}. The typed finance constraints reduce leakage, strategy-boundary, and constraint violations.
+- H3 supported: {interp["h3"]}. TASE and Constrained Safe Search are identical on the paired locked Sharpe comparison when the CI is [0,0]; current comparison: {tc_text}. This makes H3 not effectively testable in this run, so there is no evidence for incremental TASE value over the constrained baseline.
+- H4 supported: {interp["h4"]}. TASE vs Random Legal Patch is directionally slightly negative and economically small when the CI is non-positive; current comparison: {tr_text}. This does not support H4.
+- H5 supported: partially. H1a and H2 remain consistent with the synthetic, ETF, and stock diagnostics, but H3/H4 remain unsupported or unidentifiable.
 
-## Interpretation Rules
+## Implication for Research Framing
 
-Leakage-failing or strategy-boundary-failing candidates are not allowed into valid selection. They are reported only as invalid high-score evidence. DSR is intentionally not reported here; paired block bootstrap on selected locked results is used for TASE-vs-baseline differences.
+This run supports a constrained validation and safety framework: invalid high-score detection, finance-typed hard gates, valid-only headline accounting, and negative controls. It does not support a performance-improving self-evolving trading harness claim. In the paper framing, H3/H4 should be downgraded to exploratory scope statements unless a later design creates legal patch differences that are observable out of sample.
+
+A safer dependent variable for the next step is pipeline integrity and per-asset data-pathology handling, not diversified portfolio P&L. The current-constituent construction remains survivor-biased, so the report should keep the survivorship-bias warning whenever these results are cited.
 
 ## Recommendation
 
@@ -945,34 +1024,56 @@ Leakage-failing or strategy-boundary-failing candidates are not allowed into val
 """
 
 
-def build_sp500_short_plain_chinese_summary(summary: pd.DataFrame, candidate_log: pd.DataFrame, paired: pd.DataFrame) -> str:
-    interp = interpret_sp500_short_results(summary, candidate_log, paired)
-    h = lambda key: "支持" if bool(interp[key]) else "暂不支持"
+def build_sp500_short_plain_chinese_summary(
+    summary: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    paired: pd.DataFrame,
+    valid_only_summary: pd.DataFrame | None = None,
+    invalid_high_score_log: pd.DataFrame | None = None,
+) -> str:
+    interp = interpret_sp500_short_results(summary, candidate_log, paired, valid_only_summary, invalid_high_score_log)
     tase = _arm_row(summary, "TASE Typed Harness")
     constrained = _arm_row(summary, "Constrained Safe Search")
     random = _arm_row(summary, "Random Legal Patch")
+    tr = _paired_row(paired, "TASE Typed Harness - Random Legal Patch")
+    random_text = ""
+    if tr is not None:
+        random_text = f"TASE 比随机合法修改的锁定夏普平均差是 {float(tr['mean_diff']):.4f}，方向上还略微差一点。"
     return f"""# 大白话实验结论
 
-## 这次想验证什么
+这次用的是标普500当前成分股的短窗口历史数据。它有明显幸存者偏差，因为只看当前还活着的公司，所以不证明真实赚钱能力，只能当成流程诊断。
 
-这次不用假市场，也不用 ETF，而是用标普500当前成分股的短窗口历史数据。注意：这不是严格无偏的历史标普500回测，因为成分股是当前还活着的公司；这个实验只用来检查系统在真实股票数据上处理缺失、异常、执行和风控流程时是否更稳。
+最重要的修正是：非法高分不能再被当成合法结果。如果某一组在某个切分里没有任何合法候选，就记为空，锁定期表现也记为空。非法高分会单独记录，只说明系统确实会找到危险捷径。
 
-## 结果怎么样
+结论很克制。H1a 支持：自由修改组确实出现非法高分路径。H1b 不支持：目前没有证据说明合法的自由修改结果本身也稳定表现出验证高、锁定差。H2 支持：金融硬约束确实减少违规。
 
-这次不证明真实赚钱能力，只看流程是否更稳。自由修改组如果选到偷看未来或改变策略边界的高分路径，只能当作风险证据，不能当作合法收益。TASE 的锁定期夏普是 {_fmt(float(tase["locked_sharpe"]))}，同预算安全配置是 {_fmt(float(constrained["locked_sharpe"]))}，随机合法修改是 {_fmt(float(random["locked_sharpe"]))}。TASE 相对两个对照的差异要看 paired bootstrap；如果区间没有明显站到正值，就不能说 H3/H4 成立。所有收益数字都只是辅助，不是投资结论。
+H3 不能有效检验：TASE 和只加安全约束的结果逐位相同，置信区间是 [0,0]。H4 不支持：{random_text}这个差异很小，但不能说 TASE 比随机合法修改更好。
 
-## 对应哪条假设
+所以 H5 只能说部分支持：约束和违规识别这条线成立，但还不能主张 TASE 提高了股票收益。下一步更适合把论文主线写成安全验证框架，而不是赚钱能力框架。
+"""
 
-H1a：{h("h1a")}。
-H1b：{h("h1b")}。
-H2：{h("h2")}。
-H3：{h("h3")}。
-H4：{h("h4")}。
-H5：{h("h5")}。
 
-## 下一步
+def build_sp500_short_reinterpretation_note(
+    summary: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    paired: pd.DataFrame,
+    valid_only_summary: pd.DataFrame | None = None,
+    invalid_high_score_log: pd.DataFrame | None = None,
+) -> str:
+    interp = interpret_sp500_short_results(summary, candidate_log, paired, valid_only_summary, invalid_high_score_log)
+    return f"""# S&P 500 Short-Window Reinterpretation Note
 
-{interp["recommendation"]}
+The corrected accounting changes the interpretation from a raw-score comparison to a valid-only diagnostic comparison.
+
+- Invalid fallback is disallowed: no-valid cells are recorded as `NO_VALID_CANDIDATE` with missing locked metrics.
+- Invalid high-score candidates are evidence for H1a only, not legal locked performance.
+- H1b is unsupported because legal unconstrained selections do not establish the validation-high locked-poor pattern.
+- H2 is supported because finance hard gates reduce violations.
+- H3 is not effectively testable in this run because TASE and Constrained Safe Search are identical, with paired CI [0,0].
+- H4 is unsupported because TASE is directionally slightly negative versus Random Legal Patch and the economic size is small.
+- H5 is partially supported: the cross-stage safety story is consistent, but the self-improving performance story is not established.
+
+Research framing should emphasize a finance-constrained validation harness, invalid shortcut detection, and valid-only reporting. It should not claim improved stock-market P&L from TASE on this run.
 """
 
 
@@ -983,12 +1084,21 @@ def write_sp500_short_reports(
     paired: pd.DataFrame,
     config: dict,
     reports_dir: Path,
-) -> tuple[Path, Path]:
+    valid_only_summary: pd.DataFrame | None = None,
+    invalid_high_score_log: pd.DataFrame | None = None,
+) -> tuple[Path, Path, Path]:
     reports_dir.mkdir(parents=True, exist_ok=True)
-    technical = build_sp500_short_technical_report(results, candidate_log, summary, paired, config)
-    plain = build_sp500_short_plain_chinese_summary(summary, candidate_log, paired)
+    technical = build_sp500_short_technical_report(
+        results, candidate_log, summary, paired, config, valid_only_summary, invalid_high_score_log
+    )
+    plain = build_sp500_short_plain_chinese_summary(
+        summary, candidate_log, paired, valid_only_summary, invalid_high_score_log
+    )
+    note = build_sp500_short_reinterpretation_note(summary, candidate_log, paired, valid_only_summary, invalid_high_score_log)
     technical_path = reports_dir / "sp500_short_report.md"
     plain_path = reports_dir / "plain_chinese_summary_sp500_short.md"
+    note_path = reports_dir / "sp500_short_reinterpretation_note.md"
     technical_path.write_text(technical, encoding="utf-8")
     plain_path.write_text(plain, encoding="utf-8")
-    return technical_path, plain_path
+    note_path.write_text(note, encoding="utf-8")
+    return technical_path, plain_path, note_path

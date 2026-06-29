@@ -29,6 +29,8 @@ class StockRunOutput:
     candidate_log: pd.DataFrame
     summary: pd.DataFrame
     paired_bootstrap: pd.DataFrame
+    valid_only_summary: pd.DataFrame
+    invalid_high_score_log: pd.DataFrame
     exclusion_log: pd.DataFrame
 
 
@@ -171,7 +173,11 @@ def paired_block_bootstrap(results: pd.DataFrame, block_size: int = 5, n_bootstr
         if merged.empty:
             continue
         for metric in ["oos_sharpe", "oos_cumulative_return"]:
-            diff = (merged[f"{metric}_left"] - merged[f"{metric}_right"]).to_numpy(dtype=float)
+            metric_cols = [f"{metric}_left", f"{metric}_right"]
+            metric_merged = merged.dropna(subset=metric_cols)
+            if metric_merged.empty:
+                continue
+            diff = (metric_merged[f"{metric}_left"] - metric_merged[f"{metric}_right"]).to_numpy(dtype=float)
             means = []
             for _ in range(int(n_bootstrap)):
                 sample = []
@@ -254,11 +260,12 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
                     oos_eval = eval_for(harness, oos_blocks)
                     strategy_pass, availability_pass = audits_for(harness)
                     leakage_pass = is_eval.leakage_violations == 0
-                    hard_gate_pass = bool(leakage_pass and strategy_pass and availability_pass)
+                    constraint_pass = is_eval.constraint_violations == 0
+                    hard_gate_pass = bool(leakage_pass and strategy_pass and availability_pass and constraint_pass)
                     if arm == "Unconstrained Search":
                         selectable = hard_gate_pass
                     elif arm == "Lightweight Strategy Tuning":
-                        selectable = leakage_pass and availability_pass
+                        selectable = bool(leakage_pass and availability_pass and constraint_pass)
                     else:
                         selectable = hard_gate_pass
                     selection = _objective(is_eval, selectable)
@@ -281,6 +288,7 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
                         "is_score": is_eval.sharpe,
                         "oos_score": oos_eval.sharpe,
                         "valid_for_selection": selectable,
+                        "selection_status": "VALID_CANDIDATE" if selectable else "INVALID_CANDIDATE",
                         "leakage_audit_pass": leakage_pass,
                         "strategy_boundary_pass": strategy_pass,
                         "availability_audit_pass": availability_pass,
@@ -294,11 +302,45 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
                 valid_scored = [row for row in scored if row["valid_for_selection"]]
                 if valid_scored:
                     chosen = sorted(valid_scored, key=lambda row: row["selection_score"], reverse=True)[0]
+                    result_rows.append(chosen | {"chosen": True, "selection_status": "VALID_SELECTED"})
                 else:
-                    chosen = sorted(scored, key=lambda row: row["selection_score"], reverse=True)[0]
-                result_rows.append(chosen | {"chosen": True})
+                    null_row = {
+                        "arm": arm,
+                        "seed": seed,
+                        "split_id": split_id,
+                        "candidate_id": pd.NA,
+                        "selection_score": np.nan,
+                        "is_score": np.nan,
+                        "oos_score": np.nan,
+                        "valid_for_selection": False,
+                        "selection_status": "NO_VALID_CANDIDATE",
+                        "chosen": False,
+                        "leakage_audit_pass": False,
+                        "strategy_boundary_pass": False,
+                        "availability_audit_pass": False,
+                        "constraint_violations": np.nan,
+                        "candidate_values": pd.NA,
+                    }
+                    for prefix in ["is", "oos"]:
+                        for key in [
+                            "sharpe",
+                            "cumulative_return",
+                            "max_drawdown",
+                            "turnover",
+                            "hit_rate",
+                            "active_asset_count",
+                            "cash_ratio",
+                            "constraint_violations",
+                            "leakage_violations",
+                            "strategy_boundary_violations",
+                            "availability_violations",
+                        ]:
+                            null_row[f"{prefix}_{key}"] = np.nan
+                    result_rows.append(null_row)
     candidate_log = pd.DataFrame(candidate_rows)
     results = pd.DataFrame(result_rows)
+    if "chosen" not in results.columns:
+        results["chosen"] = results["selection_status"].eq("VALID_SELECTED")
     chosen_summary = (
         results.groupby("arm", sort=False)
         .agg(
@@ -315,6 +357,8 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
             availability_audit_pass_rate=("availability_audit_pass", "mean"),
             constraint_violation_count=("constraint_violations", "mean"),
             valid_selection_rate=("valid_for_selection", "mean"),
+            valid_selected_cells=("selection_status", lambda s: int((s == "VALID_SELECTED").sum())),
+            no_valid_candidate_cells=("selection_status", lambda s: int((s == "NO_VALID_CANDIDATE").sum())),
         )
         .reset_index()
     )
@@ -326,6 +370,64 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
     valid_counts = candidate_log[candidate_log["valid_for_selection"]].groupby("arm")["candidate_id"].nunique().rename("valid_candidate_count")
     summary = chosen_summary.merge(true_counts, on="arm", how="left").merge(valid_counts, on="arm", how="left")
     summary["valid_candidate_count"] = summary["valid_candidate_count"].fillna(0).astype(int)
+    valid_only_summary = (
+        results.groupby("arm", sort=False)
+        .agg(
+            valid_selected_cells=("selection_status", lambda s: int((s == "VALID_SELECTED").sum())),
+            no_valid_candidate_cells=("selection_status", lambda s: int((s == "NO_VALID_CANDIDATE").sum())),
+            valid_only_locked_sharpe_mean=("oos_sharpe", "mean"),
+            valid_only_locked_cumulative_return_mean=("oos_cumulative_return", "mean"),
+            valid_only_constraint_violation_mean=("constraint_violations", "mean"),
+        )
+        .reset_index()
+    )
+    invalid_candidates = candidate_log[~candidate_log["valid_for_selection"].astype(bool)].copy()
+    if invalid_candidates.empty:
+        invalid_high_score_log = pd.DataFrame(
+            columns=[
+                "arm",
+                "seed",
+                "split_id",
+                "split",
+                "candidate_id",
+                "reason",
+                "validation_score",
+                "locked_score_if_computed",
+                "leakage_violation",
+                "strategy_boundary_violation",
+                "constraint_violation",
+                "why_not_selected",
+            ]
+        )
+    else:
+        def _reason(row: pd.Series) -> str:
+            reasons = []
+            if not bool(row.get("leakage_audit_pass", False)):
+                reasons.append("LEAKAGE_FAIL")
+            if not bool(row.get("strategy_boundary_pass", False)):
+                reasons.append("STRATEGY_BOUNDARY_FAIL")
+            if not bool(row.get("availability_audit_pass", False)):
+                reasons.append("AVAILABILITY_FAIL")
+            if float(row.get("constraint_violations", 0) or 0) > 0:
+                reasons.append("CONSTRAINT_FAIL")
+            return ";".join(dict.fromkeys(reasons)) or "FAILED_HARD_GATE"
+
+        invalid_high_score_log = pd.DataFrame(
+            {
+                "arm": invalid_candidates["arm"],
+                "seed": invalid_candidates["seed"],
+                "split_id": invalid_candidates["split_id"],
+                "split": invalid_candidates["split_id"],
+                "candidate_id": invalid_candidates["candidate_id"],
+                "reason": invalid_candidates.apply(_reason, axis=1),
+                "validation_score": invalid_candidates["is_score"],
+                "locked_score_if_computed": invalid_candidates["oos_score"],
+                "leakage_violation": ~invalid_candidates["leakage_audit_pass"].astype(bool),
+                "strategy_boundary_violation": ~invalid_candidates["strategy_boundary_pass"].astype(bool),
+                "constraint_violation": invalid_candidates["constraint_violations"],
+                "why_not_selected": "FAILED_HARD_GATE",
+            }
+        ).sort_values(["validation_score", "arm", "seed", "split_id"], ascending=[False, True, True, True])
     summary.attrs["effective_start_date"] = cfg["effective_start_date"]
     summary.attrs["effective_end_date"] = cfg["effective_end_date"]
     summary.attrs["run_mode"] = "quick" if quick else "full"
@@ -335,4 +437,4 @@ def run_sp500_short(bundle: StockDataBundle, config: dict, quick: bool = False) 
         int(cfg.get("bootstrap_samples", 200)),
     )
     exclusion_log = pd.concat(exclusion_frames, ignore_index=True) if exclusion_frames else pd.DataFrame(columns=["date", "ticker", "reason"])
-    return StockRunOutput(results, candidate_log, summary, paired, exclusion_log)
+    return StockRunOutput(results, candidate_log, summary, paired, valid_only_summary, invalid_high_score_log, exclusion_log)
