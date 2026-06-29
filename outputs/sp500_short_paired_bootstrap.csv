@@ -1,0 +1,5 @@
+comparison,metric,mean_diff,ci_low,ci_high,n_pairs,block_size
+TASE Typed Harness - Constrained Safe Search,oos_sharpe,0.0,0.0,0.0,30,5
+TASE Typed Harness - Constrained Safe Search,oos_cumulative_return,0.0,0.0,0.0,30,5
+TASE Typed Harness - Random Legal Patch,oos_sharpe,-0.0023707468603911376,-0.007112240581173424,5.921189464667501e-17,30,5
+TASE Typed Harness - Random Legal Patch,oos_cumulative_return,-0.0022564057741148113,-0.00344343255985323,-0.0012251566653255772,30,5
