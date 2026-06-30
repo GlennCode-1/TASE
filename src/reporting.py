@@ -689,7 +689,7 @@ Note: unconstrained search may show very high raw locked metrics, but it fails t
 - Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
 - Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
 - Strategy/policy tuning baseline is not a legal harness comparison.
-- If this is a quick smoke or staged full run, it should not be described as final evidence.
+- This report may be described as final full evidence only when Run mode is full_10seed with Seeds = 10 and Search budget = 100.
 
 ## Recommendation
 
@@ -778,6 +778,8 @@ This public full run tests overfitting-adjusted robustness, not live trading pro
 - Run mode: {config.get("run_mode", "full")}
 - Seeds: {config.get("n_seeds", "NA")}
 - Search budget: {config.get("search_budget", "NA")}
+- Split count: {config.get("split_count", "NA")}
+- Paired observations: {config.get("paired_observations", "NA")}
 - Bootstrap iterations: {config.get("bootstrap_iterations", config.get("bootstrap_samples", "NA"))}
 - Effective evaluation window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
 - Search budget per searchable arm: {config["quick_search_budget"] if config.get("run_mode") == "quick smoke" else config["search_budget"]}
@@ -1179,6 +1181,30 @@ def interpret_portfolio_harness_results(summary: pd.DataFrame, invalid_log: pd.D
 
 
 
+
+def _validate_portfolio_report_config(config: dict) -> None:
+    if str(config.get("run_mode")) != "full_10seed":
+        return
+    problems = []
+    if int(config.get("n_seeds", -1)) != 10:
+        problems.append("Seeds must be 10 for full_10seed report")
+    if int(config.get("search_budget", -1)) != 100:
+        problems.append("Search budget must be 100 for full_10seed report")
+    if str(config.get("mode", "full")) != "full":
+        problems.append("Config mode must be full for full_10seed report")
+    if problems:
+        raise ValueError("full_10seed report refused partial run: " + "; ".join(problems))
+
+
+def _partial_full_comparison_text(current: dict[str, object], reference: dict[str, object] | None) -> str:
+    if not reference:
+        return "No partial_full reference was attached to this report."
+    keys = ["h1a", "h2", "h3p", "h4p", "h5p"]
+    changed = [key for key in keys if bool(current.get(key)) != bool(reference.get(key))]
+    if not changed:
+        return "The 10-seed full run agrees with the prior partial_full headline: H1a/H2/H5p supported, H3p/H4p not supported."
+    return "The 10-seed full run changes the prior partial_full headline for: " + ", ".join(changed) + "."
+
 def portfolio_return_preservation(paired: pd.DataFrame, comparison: str, threshold: float = -0.02) -> dict[str, object]:
     ret = _portfolio_paired(paired, comparison, "turnover_adjusted_net_return")
     cum = _portfolio_paired(paired, comparison, "locked_cumulative_return")
@@ -1229,6 +1255,7 @@ def build_portfolio_harness_technical_report(
     paired: pd.DataFrame,
     config: dict,
 ) -> str:
+    _validate_portfolio_report_config(config)
     interp = interpret_portfolio_harness_results(summary, invalid_log, paired)
     metrics_table = summary.to_markdown(index=False)
     paired_table = paired.to_markdown(index=False) if paired is not None and not paired.empty else "No paired bootstrap output."
@@ -1239,8 +1266,10 @@ def build_portfolio_harness_technical_report(
     random_comparison = "TASE Typed Portfolio Harness Reconstruction - Random Legal Harness Patch"
     safe_risk = portfolio_risk_improvements(paired, safe_comparison)
     random_risk = portfolio_risk_improvements(paired, random_comparison)
-    safe_return = portfolio_return_preservation(paired, safe_comparison)
-    random_return = portfolio_return_preservation(paired, random_comparison)
+    threshold = float((config.get("judgment", {}) or {}).get("return_preservation_threshold", -0.02))
+    safe_return = portfolio_return_preservation(paired, safe_comparison, threshold=threshold)
+    random_return = portfolio_return_preservation(paired, random_comparison, threshold=threshold)
+    partial_text = _partial_full_comparison_text(interp, config.get("partial_full_reference"))
     return f"""# Portfolio Construction / Risk Management Harness Diagnostic
 
 ## Purpose
@@ -1267,6 +1296,8 @@ It does not test live profitability and it does not allow TASE to discover alpha
 - Run mode: {config.get("run_mode", "full")}
 - Seeds: {config.get("n_seeds", "NA")}
 - Search budget: {config.get("search_budget", "NA")}
+- Split count: {config.get("split_count", "NA")}
+- Paired observations: {config.get("paired_observations", "NA")}
 - Bootstrap iterations: {config.get("bootstrap_iterations", config.get("bootstrap_samples", "NA"))}
 
 ## Arms
@@ -1306,6 +1337,10 @@ Negative controls are represented by invalid candidate attempts that change poli
 - TASE vs Same-Budget Safe Search risk improvements: {", ".join(safe_risk) if safe_risk else "none with paired CI support"}. Return preservation: {safe_return["ok"]} ({safe_return["text"]}).
 - TASE vs Random Legal Patch risk improvements: {", ".join(random_risk) if random_risk else "none with paired CI support"}. Return preservation: {random_return["ok"]} ({random_return["text"]}).
 
+## Comparison With Partial Full
+
+{partial_text}
+
 ## H1a-H5p Judgment
 
 - H1a supported: {interp["h1a"]}. Unconstrained portfolio harness search produced invalid candidates that are logged but not used in legal comparisons.
@@ -1324,7 +1359,7 @@ Raw return, annualized return, and Sharpe are secondary. The primary evidence is
 - Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
 - Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
 - Strategy/policy tuning baseline is not a legal harness comparison.
-- If this is a quick smoke or staged full run, it should not be described as final evidence.
+- This report may be described as final full evidence only when Run mode is full_10seed with Seeds = 10 and Search budget = 100.
 
 ## Recommendation
 
@@ -1338,6 +1373,7 @@ def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid
     safe = _portfolio_row(summary, "Same-Budget Safe Configuration Search")
     random = _portfolio_row(summary, "Random Legal Harness Patch")
     h = lambda key: "支持" if bool(interp[key]) else "不支持/暂时看不出来"
+    run_text = "真正的 10-seed full run" if str(run_label) == "full_10seed" else f"{run_label} run"
     next_step = (
         "下一步可以继续把它作为组合构建安全诊断来做，但不要写成发现 alpha 或证明真实盈利。"
         if bool(interp["h2"]) and bool(interp["h5p"])
@@ -1347,7 +1383,7 @@ def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid
 
 ## 这次想验证什么
 
-这次是 {run_label} run，不再看简单选股收益，而是固定 alpha、投资目标、风险偏好、仓位上限、换手上限和调仓频率，只让系统在组合构建和风险管理的执行流程里做合法改动。
+这次是 {run_text}，不再看简单选股收益，而是固定 alpha、投资目标、风险偏好、仓位上限、换手上限和调仓频率，只让系统在组合构建和风险管理的执行流程里做合法改动。
 
 ## 结果怎么样
 

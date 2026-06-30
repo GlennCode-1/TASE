@@ -200,6 +200,67 @@ def paired_block_bootstrap(results: pd.DataFrame, block_size: int = 5, n_bootstr
     return pd.DataFrame(rows)
 
 
+def finalize_portfolio_harness_output(results: pd.DataFrame, candidate_log: pd.DataFrame, config: dict) -> PortfolioRunOutput:
+    summary = (
+        results.groupby("arm", sort=False)
+        .agg(
+            locked_cvar_95=("oos_cvar_95", "mean"),
+            locked_downside_deviation=("oos_downside_deviation", "mean"),
+            locked_sortino=("oos_sortino", "mean"),
+            locked_calmar=("oos_calmar", "mean"),
+            locked_max_drawdown=("oos_max_drawdown", "mean"),
+            locked_drawdown_duration=("oos_drawdown_duration", "mean"),
+            realized_volatility=("oos_realized_volatility", "mean"),
+            turnover=("oos_turnover", "mean"),
+            transaction_cost_paid=("oos_transaction_cost_paid", "mean"),
+            turnover_adjusted_net_return=("oos_turnover_adjusted_net_return", "mean"),
+            constraint_violation_severity=("oos_constraint_violation_severity", "mean"),
+            infeasible_optimization_events=("oos_infeasible_optimization_events", "mean"),
+            optimizer_recovery_success_rate=("oos_optimizer_recovery_success_rate", "mean"),
+            failed_rebalance_retention_rate=("oos_failed_rebalance_retention_rate", "mean"),
+            cash_ratio_due_to_infeasibility=("oos_cash_ratio_due_to_infeasibility", "mean"),
+            exposure_drift=("oos_exposure_drift", "mean"),
+            herfindahl_index=("oos_herfindahl_index", "mean"),
+            diversification_ratio=("oos_diversification_ratio", "mean"),
+            asset_class_cap_violation_severity=("oos_asset_class_cap_violation_severity", "mean"),
+            high_vol_return=("oos_high_vol_return", "mean"),
+            normal_vol_return=("oos_normal_vol_return", "mean"),
+            stress_recovery_return=("oos_stress_recovery_return", "mean"),
+            locked_cumulative_return=("oos_cumulative_return", "mean"),
+            locked_annualized_return=("oos_annualized_return", "mean"),
+            locked_sharpe=("oos_sharpe", "mean"),
+            valid_selected_cells=("selection_status", lambda s: int((s == "VALID_SELECTED").sum())),
+            no_valid_candidate_cells=("selection_status", lambda s: int((s == "NO_VALID_CANDIDATE").sum())),
+        )
+        .reset_index()
+    )
+    true_counts = candidate_log.groupby("arm")["candidate_id"].nunique().rename("true_candidate_count")
+    valid_counts = candidate_log[candidate_log["valid_for_selection"]].groupby("arm")["candidate_id"].nunique().rename("valid_candidate_count")
+    summary = summary.merge(true_counts, on="arm", how="left").merge(valid_counts, on="arm", how="left")
+    summary["true_candidate_count"] = summary["true_candidate_count"].fillna(1).astype(int)
+    summary["valid_candidate_count"] = summary["valid_candidate_count"].fillna(0).astype(int)
+    invalid = candidate_log[~candidate_log["valid_for_selection"].astype(bool)].copy()
+    if invalid.empty:
+        invalid_log = pd.DataFrame(columns=["arm", "seed", "split_id", "candidate_id", "reason", "validation_score", "locked_score_if_computed", "why_not_selected"])
+    else:
+        invalid_log = pd.DataFrame(
+            {
+                "arm": invalid["arm"],
+                "seed": invalid["seed"],
+                "split_id": invalid["split_id"],
+                "candidate_id": invalid["candidate_id"],
+                "reason": invalid["gate_reason"],
+                "validation_score": invalid["is_score"],
+                "locked_score_if_computed": invalid["oos_score"],
+                "why_not_selected": "FAILED_HARD_GATE",
+            }
+        ).sort_values("validation_score", ascending=False)
+    bootstrap_samples = int(config.get("bootstrap_iterations", config.get("bootstrap_samples", 200)))
+    block_size = int(config.get("block_size", config.get("bootstrap_block_size", 5)))
+    paired = paired_block_bootstrap(results, block_size, bootstrap_samples)
+    return PortfolioRunOutput(results, candidate_log, summary, invalid_log, paired)
+
+
 def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = False) -> PortfolioRunOutput:
     cfg = dict(config)
     if quick:
@@ -258,7 +319,8 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
             )
         return eval_cache[key]
 
-    for seed in range(int(cfg["n_seeds"])):
+    seed_values = [int(seed) for seed in cfg.get("seed_ids", range(int(cfg["n_seeds"]))) ]
+    for seed in seed_values:
         for split_id, (is_blocks, oos_blocks) in enumerate(splits):
             for arm in SEARCH_ARMS:
                 candidates = _candidates_for_arm(arm, fixed_base, cfg, budget, seed)
@@ -333,61 +395,4 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
                 result_rows.append({"arm": arm, "seed": seed, "split_id": split_id, "candidate_id": f"{arm}-{seed}-{split_id}", "selection_status": "PASSIVE", "valid_for_selection": True, "chosen": True, "selection_score": np.nan, "is_score": np.nan, "oos_score": eval_obj.turnover_adjusted_net_return, "gate_pass": True, "gate_reason": "PASSIVE", **{f"oos_{k}": v for k, v in eval_obj.to_dict().items()}})
     candidate_log = pd.DataFrame(candidate_rows)
     results = pd.DataFrame(result_rows)
-    summary = (
-        results.groupby("arm", sort=False)
-        .agg(
-            locked_cvar_95=("oos_cvar_95", "mean"),
-            locked_downside_deviation=("oos_downside_deviation", "mean"),
-            locked_sortino=("oos_sortino", "mean"),
-            locked_calmar=("oos_calmar", "mean"),
-            locked_max_drawdown=("oos_max_drawdown", "mean"),
-            locked_drawdown_duration=("oos_drawdown_duration", "mean"),
-            realized_volatility=("oos_realized_volatility", "mean"),
-            turnover=("oos_turnover", "mean"),
-            transaction_cost_paid=("oos_transaction_cost_paid", "mean"),
-            turnover_adjusted_net_return=("oos_turnover_adjusted_net_return", "mean"),
-            constraint_violation_severity=("oos_constraint_violation_severity", "mean"),
-            infeasible_optimization_events=("oos_infeasible_optimization_events", "mean"),
-            optimizer_recovery_success_rate=("oos_optimizer_recovery_success_rate", "mean"),
-            failed_rebalance_retention_rate=("oos_failed_rebalance_retention_rate", "mean"),
-            cash_ratio_due_to_infeasibility=("oos_cash_ratio_due_to_infeasibility", "mean"),
-            exposure_drift=("oos_exposure_drift", "mean"),
-            herfindahl_index=("oos_herfindahl_index", "mean"),
-            diversification_ratio=("oos_diversification_ratio", "mean"),
-            asset_class_cap_violation_severity=("oos_asset_class_cap_violation_severity", "mean"),
-            high_vol_return=("oos_high_vol_return", "mean"),
-            normal_vol_return=("oos_normal_vol_return", "mean"),
-            stress_recovery_return=("oos_stress_recovery_return", "mean"),
-            locked_cumulative_return=("oos_cumulative_return", "mean"),
-            locked_annualized_return=("oos_annualized_return", "mean"),
-            locked_sharpe=("oos_sharpe", "mean"),
-            valid_selected_cells=("selection_status", lambda s: int((s == "VALID_SELECTED").sum())),
-            no_valid_candidate_cells=("selection_status", lambda s: int((s == "NO_VALID_CANDIDATE").sum())),
-        )
-        .reset_index()
-    )
-    true_counts = candidate_log.groupby("arm")["candidate_id"].nunique().rename("true_candidate_count")
-    valid_counts = candidate_log[candidate_log["valid_for_selection"]].groupby("arm")["candidate_id"].nunique().rename("valid_candidate_count")
-    summary = summary.merge(true_counts, on="arm", how="left").merge(valid_counts, on="arm", how="left")
-    summary["true_candidate_count"] = summary["true_candidate_count"].fillna(1).astype(int)
-    summary["valid_candidate_count"] = summary["valid_candidate_count"].fillna(0).astype(int)
-    invalid = candidate_log[~candidate_log["valid_for_selection"].astype(bool)].copy()
-    if invalid.empty:
-        invalid_log = pd.DataFrame(columns=["arm", "seed", "split_id", "candidate_id", "reason", "validation_score", "locked_score_if_computed", "why_not_selected"])
-    else:
-        invalid_log = pd.DataFrame(
-            {
-                "arm": invalid["arm"],
-                "seed": invalid["seed"],
-                "split_id": invalid["split_id"],
-                "candidate_id": invalid["candidate_id"],
-                "reason": invalid["gate_reason"],
-                "validation_score": invalid["is_score"],
-                "locked_score_if_computed": invalid["oos_score"],
-                "why_not_selected": "FAILED_HARD_GATE",
-            }
-        ).sort_values("validation_score", ascending=False)
-    bootstrap_samples = int(cfg.get("bootstrap_iterations", cfg.get("bootstrap_samples", 200)))
-    block_size = int(cfg.get("block_size", cfg.get("bootstrap_block_size", 5)))
-    paired = paired_block_bootstrap(results, block_size, bootstrap_samples)
-    return PortfolioRunOutput(results, candidate_log, summary, invalid_log, paired)
+    return finalize_portfolio_harness_output(results, candidate_log, cfg)

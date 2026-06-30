@@ -46,13 +46,13 @@ processed_data_path: data/processed/public_full_prices.csv
 download_source: yfinance
 allow_synthetic_fallback: false
 
-mode: partial_full
+mode: full
 rolling_splits: true
 selection_blocks: 12
 validation_window_blocks: 4
 oos_window_blocks: 2
 final_confirmation_months: 12
-n_seeds: 5
+n_seeds: 10
 quick_n_seeds: 1
 search_budget: 100
 quick_search_budget: 12
@@ -89,3 +89,6 @@ stress_scenarios:
   transaction_cost_spike: true
   extreme_volatility_regime: true
   concentration_shock: true
+
+judgment:
+  return_preservation_threshold: -0.0200

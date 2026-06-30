@@ -171,10 +171,10 @@ def test_portfolio_full_config_exists() -> None:
     assert path.exists()
     with path.open("r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
-    assert cfg["mode"] in {"full", "partial_full"}
+    assert cfg["mode"] == "full"
     assert cfg["allow_synthetic_fallback"] is False
-    assert cfg["n_seeds"] >= 5
-    assert cfg["search_budget"] >= 100
+    assert cfg["n_seeds"] == 10
+    assert cfg["search_budget"] == 100
 
 
 def test_full_run_uses_more_budget_than_quick() -> None:
@@ -289,3 +289,108 @@ def test_plain_chinese_full_summary_mentions_no_alpha_discovery() -> None:
     assert "不证明真实赚钱能力" in text
     assert "不说明系统发现了新 alpha" in text
     assert "固定 alpha" in text
+
+
+
+def test_portfolio_full_requires_10_seeds() -> None:
+    with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    assert cfg["mode"] == "full"
+    assert cfg["n_seeds"] == 10
+
+
+def test_portfolio_full_config_not_partial() -> None:
+    text = Path("configs/portfolio_harness_full.yaml").read_text(encoding="utf-8")
+    assert "mode: full" in text
+    assert "partial_full" not in text
+    assert "n_seeds: 5" not in text
+
+
+def test_full_run_uses_search_budget_100() -> None:
+    with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    assert cfg["search_budget"] == 100
+    assert cfg["candidate_per_round"] == 8
+
+
+def test_full_outputs_have_10seed_prefix() -> None:
+    prefix = "portfolio_harness_full_10seed"
+    expected = [
+        f"outputs/{prefix}_summary_metrics.csv",
+        f"outputs/{prefix}_results_by_split.csv",
+        f"outputs/{prefix}_candidate_log.csv",
+        f"outputs/{prefix}_invalid_high_score_log.csv",
+        f"outputs/{prefix}_paired_bootstrap.csv",
+        f"reports/{prefix}_report.md",
+        f"reports/plain_chinese_summary_{prefix}.md",
+    ]
+    existing = [Path(path).exists() for path in expected]
+    assert all(existing) or not any(existing)
+
+
+def test_full_outputs_have_10_seed_coverage() -> None:
+    path = Path("outputs/portfolio_harness_full_10seed_results_by_split.csv")
+    if not path.exists():
+        with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+        assert cfg["n_seeds"] == 10
+        return
+    results = pd.read_csv(path)
+    assert sorted(results["seed"].dropna().astype(int).unique()) == list(range(10))
+    assert results[results["arm"] == "TASE Typed Portfolio Harness Reconstruction"][["seed", "split_id"]].drop_duplicates().shape[0] == 70
+
+
+def test_full_report_refuses_partial_seed_count() -> None:
+    from src.reporting import build_portfolio_harness_technical_report
+
+    cfg = _config()
+    output = run_portfolio_harness(_bundle(cfg), cfg, quick=True)
+    report_cfg = dict(cfg)
+    report_cfg["run_mode"] = "full_10seed"
+    report_cfg["mode"] = "full"
+    report_cfg["n_seeds"] = 5
+    report_cfg["search_budget"] = 100
+    try:
+        build_portfolio_harness_technical_report(
+            output.results_by_split,
+            output.candidate_log,
+            output.summary,
+            output.invalid_high_score_log,
+            output.paired_bootstrap,
+            report_cfg,
+        )
+    except ValueError as exc:
+        assert "refused partial run" in str(exc)
+    else:
+        raise AssertionError("full_10seed report accepted partial seed count")
+
+
+def test_plain_chinese_summary_says_10seed_full() -> None:
+    from src.reporting import build_portfolio_harness_plain_chinese_summary
+
+    cfg = _config()
+    output = run_portfolio_harness(_bundle(cfg), cfg, quick=True)
+    text = build_portfolio_harness_plain_chinese_summary(
+        output.summary, output.invalid_high_score_log, output.paired_bootstrap, run_label="full_10seed"
+    )
+    assert "真正的 10-seed full run" in text
+    assert "不证明真实赚钱能力" in text
+    assert "不说明系统发现了新 alpha" in text
+
+
+def test_no_quick_flag_in_full_report() -> None:
+    path = Path("reports/portfolio_harness_full_10seed_report.md")
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    assert "Run mode: full_10seed" in text
+    assert "Run mode: partial_full" not in text
+    assert "Run mode: quick" not in text
+    assert "quick smoke" not in text
+    assert "staged full" not in text
+
+
+def test_return_preservation_threshold_unchanged() -> None:
+    with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    assert float(cfg["judgment"]["return_preservation_threshold"]) == -0.02
