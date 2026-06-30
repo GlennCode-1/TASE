@@ -683,6 +683,14 @@ Note: unconstrained search may show very high raw locked metrics, but it fails t
 - Unconstrained degradation: {_fmt(float(interp["free_degradation"]))}; TASE degradation: {_fmt(float(interp["tase_degradation"]))}
 - TASE DSR: {_fmt(float(interp["tase_dsr"]))}; constrained-safe DSR: {_fmt(float(interp["fixed_dsr"]))}; random-legal DSR: {_fmt(float(interp["random_dsr"]))}
 
+## Limitations
+
+- ETF universe only; this is not a live trading result.
+- Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
+- Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
+- Strategy/policy tuning baseline is not a legal harness comparison.
+- If this is a quick smoke or staged full run, it should not be described as final evidence.
+
 ## Recommendation
 
 {interp["recommendation"]}
@@ -768,6 +776,9 @@ This public full run tests overfitting-adjusted robustness, not live trading pro
 - Filtered tickers: {config.get("filtered_tickers", "NA")}
 - Date request: {config["start_date"]} to {config["end_date"]}
 - Run mode: {config.get("run_mode", "full")}
+- Seeds: {config.get("n_seeds", "NA")}
+- Search budget: {config.get("search_budget", "NA")}
+- Bootstrap iterations: {config.get("bootstrap_iterations", config.get("bootstrap_samples", "NA"))}
 - Effective evaluation window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
 - Search budget per searchable arm: {config["quick_search_budget"] if config.get("run_mode") == "quick smoke" else config["search_budget"]}
 - Seeds: {config["quick_n_seeds"] if config.get("run_mode") == "quick smoke" else config["n_seeds"]}
@@ -795,6 +806,14 @@ This public full run tests overfitting-adjusted robustness, not live trading pro
 ## Important Interpretation Note
 
 The unconstrained arm can show very high raw locked metrics, but it fails the leakage/constraint audit. This report therefore does not treat that raw score as a profitability claim or as sufficient support for TASE.
+
+## Limitations
+
+- ETF universe only; this is not a live trading result.
+- Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
+- Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
+- Strategy/policy tuning baseline is not a legal harness comparison.
+- If this is a quick smoke or staged full run, it should not be described as final evidence.
 
 ## Recommendation
 
@@ -838,6 +857,7 @@ def write_public_full_reports(
     bootstrap: pd.DataFrame | None,
     config: dict,
     reports_dir: Path,
+    output_prefix: str = "portfolio_harness",
 ) -> tuple[Path, Path]:
     reports_dir.mkdir(parents=True, exist_ok=True)
     technical = build_public_full_technical_report(results, candidate_log, summary, bootstrap, config)
@@ -975,6 +995,9 @@ This is a current-constituent, survivor-biased short-window diagnostic task. It 
 - Retained stocks: {config.get("retained_assets", "NA")}
 - Minimum retained stocks: {config["min_assets"]}
 - Run mode: {config.get("run_mode", "full")}
+- Seeds: {config.get("n_seeds", "NA")}
+- Search budget: {config.get("search_budget", "NA")}
+- Bootstrap iterations: {config.get("bootstrap_iterations", config.get("bootstrap_samples", "NA"))}
 - Search budget per core arm: {config["quick_search_budget"] if config.get("run_mode") == "quick smoke" else config["search_budget"]}
 - Seeds: {config["quick_n_seeds"] if config.get("run_mode") == "quick smoke" else config["n_seeds"]}
 - Fixed strategy: lagged 20-day momentum minus lagged 20-day volatility penalty; weekly top-k long-only allocation; adjusted close; transaction costs.
@@ -1017,6 +1040,14 @@ A candidate must pass the hard gates before it can be selected for headline lock
 This run supports a constrained validation and safety framework: invalid high-score detection, finance-typed hard gates, valid-only headline accounting, and negative controls. It does not support a performance-improving self-evolving trading harness claim. In the paper framing, H3/H4 should be downgraded to exploratory scope statements unless a later design creates legal patch differences that are observable out of sample.
 
 A safer dependent variable for the next step is pipeline integrity and per-asset data-pathology handling, not diversified portfolio P&L. The current-constituent construction remains survivor-biased, so the report should keep the survivorship-bias warning whenever these results are cited.
+
+## Limitations
+
+- ETF universe only; this is not a live trading result.
+- Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
+- Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
+- Strategy/policy tuning baseline is not a legal harness comparison.
+- If this is a quick smoke or staged full run, it should not be described as final evidence.
 
 ## Recommendation
 
@@ -1129,21 +1160,7 @@ def interpret_portfolio_harness_results(summary: pd.DataFrame, invalid_log: pd.D
     )
 
     def improved_vs(label: str) -> bool:
-        good = 0
-        for metric in ["cvar_95", "drawdown_duration", "turnover", "constraint_violation_severity", "optimizer_recovery_success_rate"]:
-            row = _portfolio_paired(paired, label, metric)
-            if row is None:
-                continue
-            mean = float(row["mean_diff"])
-            high = float(row["ci_high"])
-            low = float(row["ci_low"])
-            if metric == "optimizer_recovery_success_rate":
-                good += int(mean > 0 and low >= -1e-9)
-            else:
-                good += int(mean < 0 and high <= 1e-9)
-        ret = _portfolio_paired(paired, label, "turnover_adjusted_net_return")
-        return_ok = ret is None or float(ret["ci_low"]) > -0.02
-        return good >= 2 and return_ok
+        return len(portfolio_risk_improvements(paired, label)) >= 2 and bool(portfolio_return_preservation(paired, label)["ok"])
 
     h3p = improved_vs("TASE Typed Portfolio Harness Reconstruction - Same-Budget Safe Configuration Search")
     h4p = improved_vs("TASE Typed Portfolio Harness Reconstruction - Random Legal Harness Patch")
@@ -1160,6 +1177,50 @@ def interpret_portfolio_harness_results(summary: pd.DataFrame, invalid_log: pd.D
     return {"h1a": h1a, "h2": h2, "h3p": h3p, "h4p": h4p, "h5p": h5p, "recommendation": recommendation}
 
 
+
+
+def portfolio_return_preservation(paired: pd.DataFrame, comparison: str, threshold: float = -0.02) -> dict[str, object]:
+    ret = _portfolio_paired(paired, comparison, "turnover_adjusted_net_return")
+    cum = _portfolio_paired(paired, comparison, "locked_cumulative_return")
+    sharpe = _portfolio_paired(paired, comparison, "locked_sharpe")
+    rows = [row for row in [ret, cum, sharpe] if row is not None]
+    if not rows:
+        return {"ok": False, "text": "return preservation unavailable"}
+    worst_low = min(float(row["ci_low"]) for row in rows)
+    ok = worst_low > float(threshold)
+    return {"ok": ok, "text": f"worst return CI low {worst_low:.4f} vs threshold {threshold:.4f}"}
+
+
+def portfolio_risk_improvements(paired: pd.DataFrame, comparison: str) -> list[str]:
+    improved: list[str] = []
+    row = _portfolio_paired(paired, comparison, "cvar_95")
+    if row is not None and float(row["mean_diff"]) > 0 and float(row["ci_low"]) >= -1e-9:
+        improved.append("cvar_95")
+    for metric in ["drawdown_duration", "turnover", "transaction_cost_paid", "constraint_violation_severity"]:
+        row = _portfolio_paired(paired, comparison, metric)
+        if row is not None and float(row["mean_diff"]) < 0 and float(row["ci_high"]) <= 1e-9:
+            improved.append(metric)
+    row = _portfolio_paired(paired, comparison, "optimizer_recovery_success_rate")
+    if row is not None and float(row["mean_diff"]) > 0 and float(row["ci_low"]) >= -1e-9:
+        improved.append("optimizer_recovery_success_rate")
+    return improved
+
+
+def portfolio_gate_summary(candidate_log: pd.DataFrame, invalid_log: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for arm, group in candidate_log.groupby("arm", sort=False):
+        rows.append(
+            {
+                "arm": arm,
+                "candidate_count": int(group["candidate_id"].nunique()),
+                "gate_pass_rate": float(group["gate_pass"].mean()) if "gate_pass" in group else 0.0,
+                "clean_panel_w_star_pass_rate": float(group["clean_panel_w_star_invariance"].mean()) if "clean_panel_w_star_invariance" in group else 0.0,
+                "policy_frozen_pass_rate": float(group["policy_specification_frozen"].mean()) if "policy_specification_frozen" in group else 0.0,
+                "leakage_pass_rate": float(group["leakage_audit_pass"].mean()) if "leakage_audit_pass" in group else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
 def build_portfolio_harness_technical_report(
     results: pd.DataFrame,
     candidate_log: pd.DataFrame,
@@ -1173,6 +1234,13 @@ def build_portfolio_harness_technical_report(
     paired_table = paired.to_markdown(index=False) if paired is not None and not paired.empty else "No paired bootstrap output."
     invalid_table = invalid_log.head(20).to_markdown(index=False) if invalid_log is not None and not invalid_log.empty else "No invalid high-score candidates."
     candidate_counts = candidate_log.groupby("arm")["candidate_id"].nunique().to_markdown()
+    gate_table = portfolio_gate_summary(candidate_log, invalid_log).to_markdown(index=False)
+    safe_comparison = "TASE Typed Portfolio Harness Reconstruction - Same-Budget Safe Configuration Search"
+    random_comparison = "TASE Typed Portfolio Harness Reconstruction - Random Legal Harness Patch"
+    safe_risk = portfolio_risk_improvements(paired, safe_comparison)
+    random_risk = portfolio_risk_improvements(paired, random_comparison)
+    safe_return = portfolio_return_preservation(paired, safe_comparison)
+    random_return = portfolio_return_preservation(paired, random_comparison)
     return f"""# Portfolio Construction / Risk Management Harness Diagnostic
 
 ## Purpose
@@ -1197,6 +1265,9 @@ It does not test live profitability and it does not allow TASE to discover alpha
 - Effective window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
 - Retained ETFs: {config.get("retained_assets", "NA")}
 - Run mode: {config.get("run_mode", "full")}
+- Seeds: {config.get("n_seeds", "NA")}
+- Search budget: {config.get("search_budget", "NA")}
+- Bootstrap iterations: {config.get("bootstrap_iterations", config.get("bootstrap_samples", "NA"))}
 
 ## Arms
 
@@ -1212,6 +1283,12 @@ It does not test live profitability and it does not allow TASE to discover alpha
 
 {candidate_counts}
 
+## Hard Gate Negative Control Results
+
+{gate_table}
+
+Negative controls are represented by invalid candidate attempts that change policy/specification, use future returns, or alter clean-panel w-star. These must be rejected before legal comparison.
+
 ## Headline Risk / Harness Metrics
 
 {metrics_table}
@@ -1223,6 +1300,11 @@ It does not test live profitability and it does not allow TASE to discover alpha
 ## Paired Block Bootstrap
 
 {paired_table}
+
+## Return Preservation / Trade-Off Analysis
+
+- TASE vs Same-Budget Safe Search risk improvements: {", ".join(safe_risk) if safe_risk else "none with paired CI support"}. Return preservation: {safe_return["ok"]} ({safe_return["text"]}).
+- TASE vs Random Legal Patch risk improvements: {", ".join(random_risk) if random_risk else "none with paired CI support"}. Return preservation: {random_return["ok"]} ({random_return["text"]}).
 
 ## H1a-H5p Judgment
 
@@ -1236,13 +1318,21 @@ It does not test live profitability and it does not allow TASE to discover alpha
 
 Raw return, annualized return, and Sharpe are secondary. The primary evidence is downside risk, drawdown duration, turnover and cost, constraint violation severity, optimizer recovery, exposure drift, and stress-scenario behavior. If TASE wins only by changing lambda, caps, alpha, objective weights, or rebalance frequency, it fails the task by definition.
 
+## Limitations
+
+- ETF universe only; this is not a live trading result.
+- Alpha, risk appetite, constraints, objective weights, and rebalance frequency are fixed by design.
+- Stress scenarios are pre-registered but still controlled diagnostics, not a full institutional portfolio system.
+- Strategy/policy tuning baseline is not a legal harness comparison.
+- If this is a quick smoke or staged full run, it should not be described as final evidence.
+
 ## Recommendation
 
 {interp["recommendation"]}
 """
 
 
-def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid_log: pd.DataFrame, paired: pd.DataFrame) -> str:
+def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid_log: pd.DataFrame, paired: pd.DataFrame, run_label: str = "quick") -> str:
     interp = interpret_portfolio_harness_results(summary, invalid_log, paired)
     tase = _portfolio_row(summary, "TASE Typed Portfolio Harness Reconstruction")
     safe = _portfolio_row(summary, "Same-Budget Safe Configuration Search")
@@ -1257,7 +1347,7 @@ def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid
 
 ## 这次想验证什么
 
-这次不再让系统改选股逻辑，也不再只看 top-k 等权收益。我们固定 alpha、投资目标、风险偏好、仓位上限、换手上限和调仓频率，只让系统在组合构建和风险管理的执行流程里做合法改动。
+这次是 {run_label} run，不再看简单选股收益，而是固定 alpha、投资目标、风险偏好、仓位上限、换手上限和调仓频率，只让系统在组合构建和风险管理的执行流程里做合法改动。
 
 ## 结果怎么样
 
@@ -1285,12 +1375,14 @@ def write_portfolio_harness_reports(
     paired: pd.DataFrame,
     config: dict,
     reports_dir: Path,
+    output_prefix: str = "portfolio_harness",
 ) -> tuple[Path, Path]:
     reports_dir.mkdir(parents=True, exist_ok=True)
     technical = build_portfolio_harness_technical_report(results, candidate_log, summary, invalid_log, paired, config)
-    plain = build_portfolio_harness_plain_chinese_summary(summary, invalid_log, paired)
-    technical_path = reports_dir / "portfolio_harness_report.md"
-    plain_path = reports_dir / "plain_chinese_summary_portfolio_harness.md"
+    run_label = str(config.get("run_mode", "quick"))
+    plain = build_portfolio_harness_plain_chinese_summary(summary, invalid_log, paired, run_label=run_label)
+    technical_path = reports_dir / f"{output_prefix}_report.md"
+    plain_path = reports_dir / f"plain_chinese_summary_{output_prefix}.md"
     technical_path.write_text(technical, encoding="utf-8")
     plain_path.write_text(plain, encoding="utf-8")
     return technical_path, plain_path

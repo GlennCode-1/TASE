@@ -121,14 +121,12 @@ def evaluate_portfolio_weights(
     turnover_cap = float(harness.turnover_cap if harness.turnover_cap is not None else config["turnover_cap"])
     max_weight_violation = np.maximum(w - max_weight, 0.0).sum(axis=1)
     turnover_violation = np.maximum(turnover_vec - turnover_cap, 0.0)
-    class_violation = []
-    for row in w:
-        total = 0.0
-        for cls in sorted(set(asset_classes)):
-            idx = [i for i, value in enumerate(asset_classes) if value == cls]
-            total += max(0.0, float(row[idx].sum()) - asset_cap)
-        class_violation.append(total)
-    class_violation_arr = np.asarray(class_violation)
+    class_violation_arr = np.zeros(w.shape[0], dtype=float)
+    for cls in sorted(set(asset_classes)):
+        idx = np.asarray([i for i, value in enumerate(asset_classes) if value == cls], dtype=int)
+        if idx.size:
+            exposure = w[:, idx].sum(axis=1)
+            class_violation_arr += np.maximum(exposure - asset_cap, 0.0)
     severity = float(max_weight_violation.mean() + turnover_violation.mean() + class_violation_arr.mean())
     event_count = len(events) if events is not None else 0
     failed = 0

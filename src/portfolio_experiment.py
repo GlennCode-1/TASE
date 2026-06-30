@@ -18,7 +18,7 @@ from .portfolio_harness_patches import (
     tase_config_space,
     unconstrained_space,
 )
-from .portfolio_metrics import evaluate_portfolio_weights
+from .portfolio_metrics import PortfolioEvaluation, evaluate_portfolio_weights
 from .portfolio_optimizer import compute_portfolio_weight_matrix
 from .portfolio_task import build_portfolio_features, portfolio_feature_matrices
 
@@ -76,6 +76,30 @@ def _candidates_for_arm(arm: str, base: PortfolioHarnessConfig, config: dict, bu
     raise KeyError(arm)
 
 
+
+
+def _empty_eval() -> PortfolioEvaluation:
+    return PortfolioEvaluation(
+        cumulative_return=0.0, annualized_return=0.0, sharpe=0.0, sortino=0.0, calmar=0.0,
+        max_drawdown=0.0, drawdown_duration=0.0, cvar_95=0.0, downside_deviation=0.0,
+        realized_volatility=0.0, turnover=0.0, transaction_cost_paid=0.0, turnover_adjusted_net_return=0.0,
+        constraint_violation_severity=0.0, infeasible_optimization_events=0, optimizer_recovery_success_rate=0.0,
+        failed_rebalance_retention_rate=0.0, cash_ratio_due_to_infeasibility=0.0, exposure_drift=0.0,
+        herfindahl_index=0.0, diversification_ratio=0.0, asset_class_cap_violation_severity=0.0,
+        high_vol_return=0.0, normal_vol_return=0.0, stress_recovery_return=0.0, n_days=0,
+    )
+
+
+def _invalid_candidate_score(gate_reason: str) -> float:
+    reason = str(gate_reason)
+    return float(
+        1.0
+        + 2.0 * int("POLICY_SPECIFICATION_CHANGED" in reason)
+        + 2.0 * int("FUTURE_RETURN_LEAKAGE" in reason)
+        + 1.0 * int("CLEAN_PANEL_W_STAR_CHANGED" in reason)
+        + 0.5 * int("LOOSE_COST_ACCOUNTING" in reason)
+    )
+
 def _selection_objective(eval_obj, valid: bool) -> float:
     score = (
         -2.0 * float(eval_obj.cvar_95)
@@ -126,7 +150,20 @@ def paired_block_bootstrap(results: pd.DataFrame, block_size: int = 5, n_bootstr
         "oos_constraint_violation_severity",
         "oos_optimizer_recovery_success_rate",
         "oos_turnover_adjusted_net_return",
+        "oos_cumulative_return",
+        "oos_sharpe",
     ]
+    metric_names = {
+        "oos_cvar_95": "cvar_95",
+        "oos_drawdown_duration": "drawdown_duration",
+        "oos_turnover": "turnover",
+        "oos_transaction_cost_paid": "transaction_cost_paid",
+        "oos_constraint_violation_severity": "constraint_violation_severity",
+        "oos_optimizer_recovery_success_rate": "optimizer_recovery_success_rate",
+        "oos_turnover_adjusted_net_return": "turnover_adjusted_net_return",
+        "oos_cumulative_return": "locked_cumulative_return",
+        "oos_sharpe": "locked_sharpe",
+    }
     keys = ["seed", "split_id"]
     for left, right in comparisons:
         l = results[results["arm"] == left][keys + metrics]
@@ -152,7 +189,7 @@ def paired_block_bootstrap(results: pd.DataFrame, block_size: int = 5, n_bootstr
             rows.append(
                 {
                     "comparison": f"{left} - {right}",
-                    "metric": metric.replace("oos_", ""),
+                    "metric": metric_names[metric],
                     "mean_diff": float(diff.mean()),
                     "ci_low": float(np.quantile(means, 0.025)),
                     "ci_high": float(np.quantile(means, 0.975)),
@@ -228,8 +265,6 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
                 scored = []
                 for idx, harness in enumerate(candidates):
                     gate_pass, gate_reason = gate_for(harness)
-                    is_eval = eval_for(harness, is_blocks)
-                    oos_eval = eval_for(harness, oos_blocks)
                     if arm == "Fixed Safe Portfolio Harness":
                         selectable = gate_pass
                     elif arm in LEGAL_COMPARISON_ARMS:
@@ -238,7 +273,20 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
                         selectable = gate_pass
                     else:
                         selectable = False
-                    selection = _selection_objective(is_eval, selectable)
+                    skip_illegal_eval = not gate_pass and arm != "Portfolio Strategy Tuning Baseline"
+                    if skip_illegal_eval:
+                        is_eval = _empty_eval()
+                        oos_eval = _empty_eval()
+                        invalid_proxy = _invalid_candidate_score(gate_reason)
+                        is_score = invalid_proxy
+                        oos_score = np.nan
+                        selection = -1e9
+                    else:
+                        is_eval = eval_for(harness, is_blocks)
+                        oos_eval = eval_for(harness, oos_blocks)
+                        is_score = is_eval.turnover_adjusted_net_return
+                        oos_score = oos_eval.turnover_adjusted_net_return
+                        selection = _selection_objective(is_eval, selectable)
                     if arm == "Random Legal Harness Patch":
                         selection = float(idx == 0) if selectable else -1e9
                     if arm == "Portfolio Strategy Tuning Baseline":
@@ -249,14 +297,14 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
                         "split_id": split_id,
                         "candidate_id": f"{arm}-{seed}-{idx}",
                         "selection_score": selection,
-                        "is_score": is_eval.turnover_adjusted_net_return,
-                        "oos_score": oos_eval.turnover_adjusted_net_return,
+                        "is_score": is_score,
+                        "oos_score": oos_score,
                         "valid_for_selection": selectable,
                         "selection_status": "VALID_CANDIDATE" if selectable else "INVALID_CANDIDATE",
                         "gate_pass": gate_pass,
                         "gate_reason": gate_reason,
-                        "clean_panel_w_star_invariance": clean_panel_w_star_invariance(fixed_base, harness, matrices, cfg),
-                        "policy_specification_frozen": policy_specification_frozen(fixed_base, harness, cfg),
+                        "clean_panel_w_star_invariance": "CLEAN_PANEL_W_STAR_CHANGED" not in gate_reason,
+                        "policy_specification_frozen": "POLICY_SPECIFICATION_CHANGED" not in gate_reason,
                         "leakage_audit_pass": not bool(harness.allow_future_returns),
                         "candidate_values": harness.to_dict(),
                         **{f"is_{k}": v for k, v in is_eval.to_dict().items()},
@@ -339,5 +387,7 @@ def run_portfolio_harness(bundle: PublicDataBundle, config: dict, quick: bool = 
                 "why_not_selected": "FAILED_HARD_GATE",
             }
         ).sort_values("validation_score", ascending=False)
-    paired = paired_block_bootstrap(results, int(cfg.get("bootstrap_block_size", 5)), int(cfg.get("bootstrap_samples", 200)))
+    bootstrap_samples = int(cfg.get("bootstrap_iterations", cfg.get("bootstrap_samples", 200)))
+    block_size = int(cfg.get("block_size", cfg.get("bootstrap_block_size", 5)))
+    paired = paired_block_bootstrap(results, block_size, bootstrap_samples)
     return PortfolioRunOutput(results, candidate_log, summary, invalid_log, paired)

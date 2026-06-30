@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--output-prefix", default="portfolio_harness")
     return parser.parse_args()
 
 
@@ -45,12 +46,14 @@ def main() -> None:
     outputs_dir.mkdir(parents=True, exist_ok=True)
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
     suffix = "quick" if args.quick else "full"
+    prefix = str(args.output_prefix)
+    checkpoint_prefix = f"{prefix}_{suffix}"
     paths = {
-        "results": checkpoints_dir / f"portfolio_harness_{suffix}_results_by_split.csv",
-        "candidates": checkpoints_dir / f"portfolio_harness_{suffix}_candidate_log.csv",
-        "summary": checkpoints_dir / f"portfolio_harness_{suffix}_summary_metrics.csv",
-        "invalid": checkpoints_dir / f"portfolio_harness_{suffix}_invalid_high_score_log.csv",
-        "paired": checkpoints_dir / f"portfolio_harness_{suffix}_paired_bootstrap.csv",
+        "results": checkpoints_dir / f"{checkpoint_prefix}_results_by_split.csv",
+        "candidates": checkpoints_dir / f"{checkpoint_prefix}_candidate_log.csv",
+        "summary": checkpoints_dir / f"{checkpoint_prefix}_summary_metrics.csv",
+        "invalid": checkpoints_dir / f"{checkpoint_prefix}_invalid_high_score_log.csv",
+        "paired": checkpoints_dir / f"{checkpoint_prefix}_paired_bootstrap.csv",
     }
     can_resume = args.resume and all(path.exists() for path in paths.values())
     bundle = load_or_download_public_data(config, ROOT, quick=args.quick)
@@ -73,22 +76,29 @@ def main() -> None:
         invalid.to_csv(paths["invalid"], index=False)
         paired.to_csv(paths["paired"], index=False)
     report_config = dict(config)
-    report_config["run_mode"] = "quick smoke" if args.quick else "full"
+    report_config["run_mode"] = "quick smoke" if args.quick else str(config.get("mode", "full"))
     report_config["retained_assets"] = len(bundle.universe)
     report_config["effective_start_date"] = str(bundle.start_date.date())
     report_config["effective_end_date"] = str(bundle.end_date.date())
-    results.to_csv(outputs_dir / "portfolio_harness_results_by_split.csv", index=False)
-    candidates.to_csv(outputs_dir / "portfolio_harness_candidate_log.csv", index=False)
-    summary.to_csv(outputs_dir / "portfolio_harness_summary_metrics.csv", index=False)
-    invalid.to_csv(outputs_dir / "portfolio_harness_invalid_high_score_log.csv", index=False)
-    paired.to_csv(outputs_dir / "portfolio_harness_paired_bootstrap.csv", index=False)
-    technical_path, plain_path = write_portfolio_harness_reports(results, candidates, summary, invalid, paired, report_config, reports_dir)
+    results_path = outputs_dir / f"{prefix}_results_by_split.csv"
+    candidates_path = outputs_dir / f"{prefix}_candidate_log.csv"
+    summary_path = outputs_dir / f"{prefix}_summary_metrics.csv"
+    invalid_path = outputs_dir / f"{prefix}_invalid_high_score_log.csv"
+    paired_path = outputs_dir / f"{prefix}_paired_bootstrap.csv"
+    results.to_csv(results_path, index=False)
+    candidates.to_csv(candidates_path, index=False)
+    summary.to_csv(summary_path, index=False)
+    invalid.to_csv(invalid_path, index=False)
+    paired.to_csv(paired_path, index=False)
+    technical_path, plain_path = write_portfolio_harness_reports(
+        results, candidates, summary, invalid, paired, report_config, reports_dir, output_prefix=prefix
+    )
     for path in [
-        outputs_dir / "portfolio_harness_results_by_split.csv",
-        outputs_dir / "portfolio_harness_candidate_log.csv",
-        outputs_dir / "portfolio_harness_summary_metrics.csv",
-        outputs_dir / "portfolio_harness_invalid_high_score_log.csv",
-        outputs_dir / "portfolio_harness_paired_bootstrap.csv",
+        results_path,
+        candidates_path,
+        summary_path,
+        invalid_path,
+        paired_path,
         technical_path,
         plain_path,
     ]:

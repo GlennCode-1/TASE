@@ -163,3 +163,129 @@ def test_portfolio_harness_script_smoke(tmp_path: Path) -> None:
     subprocess.run(["python", "scripts/run_portfolio_harness.py", "--config", str(cfg_path), "--quick"], check=True, timeout=120, env=env)
     assert (run_root / "outputs/portfolio_harness_summary_metrics.csv").exists()
     assert (run_root / "reports/plain_chinese_summary_portfolio_harness.md").exists()
+
+
+
+def test_portfolio_full_config_exists() -> None:
+    path = Path("configs/portfolio_harness_full.yaml")
+    assert path.exists()
+    with path.open("r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    assert cfg["mode"] in {"full", "partial_full"}
+    assert cfg["allow_synthetic_fallback"] is False
+    assert cfg["n_seeds"] >= 5
+    assert cfg["search_budget"] >= 100
+
+
+def test_full_run_uses_more_budget_than_quick() -> None:
+    with open("configs/portfolio_harness.yaml", "r", encoding="utf-8") as fh:
+        quick = yaml.safe_load(fh)
+    with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+        full = yaml.safe_load(fh)
+    assert full["n_seeds"] > quick["quick_n_seeds"]
+    assert full["search_budget"] > quick["quick_search_budget"]
+    assert full["bootstrap_iterations"] >= full["bootstrap_samples"] >= 2000
+
+
+def test_full_outputs_use_full_prefix(tmp_path: Path) -> None:
+    cfg = _config()
+    raw = make_offline_fixture_ohlcv(cfg)
+    raw_path = tmp_path / "raw.csv"
+    processed_path = tmp_path / "processed.csv"
+    raw.to_csv(raw_path, index=False)
+    cfg["raw_data_path"] = str(raw_path)
+    cfg["processed_data_path"] = str(processed_path)
+    cfg["allow_synthetic_fallback"] = False
+    cfg_path = tmp_path / "portfolio_harness_full.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    run_root = tmp_path / "run"
+    env = {**os.environ, "TASE_RUN_ROOT": str(run_root)}
+    subprocess.run(
+        [
+            "python",
+            "scripts/run_portfolio_harness.py",
+            "--config",
+            str(cfg_path),
+            "--quick",
+            "--output-prefix",
+            "portfolio_harness_full_smoke",
+        ],
+        check=True,
+        timeout=120,
+        env=env,
+    )
+    assert (run_root / "outputs/portfolio_harness_full_smoke_summary_metrics.csv").exists()
+    assert (run_root / "reports/portfolio_harness_full_smoke_report.md").exists()
+    assert (run_root / "reports/plain_chinese_summary_portfolio_harness_full_smoke.md").exists()
+
+
+def test_hard_gate_negative_controls_still_reject() -> None:
+    cfg = _config()
+    matrices = _matrices(cfg)
+    base = fixed_safe_harness(base_portfolio_harness(cfg))
+    controls = [
+        base.with_patch({"momentum_window": 60, "allow_policy_change": True}),
+        base.with_patch({"risk_aversion_lambda": 1.0, "allow_policy_change": True}),
+        base.with_patch({"objective_return_weight": 2.0, "allow_policy_change": True}),
+        base.with_patch({"max_weight": 0.5, "allow_policy_change": True}),
+        base.with_patch({"turnover_cap": 1.0, "allow_policy_change": True}),
+        base.with_patch({"asset_class_cap": 0.9, "allow_policy_change": True}),
+        base.with_patch({"rebalance_frequency": "M", "allow_policy_change": True}),
+        base.with_patch({"universe_token": "return_filtered", "allow_policy_change": True}),
+        base.with_patch({"allow_future_returns": True}),
+        base.with_patch({"ignore_infeasible_days": True, "allow_policy_change": True}),
+    ]
+    for candidate in controls:
+        ok, reason = legal_harness_gate(base, candidate, matrices, cfg)
+        assert not ok, reason
+
+
+def test_clean_panel_w_star_invariance_full() -> None:
+    with open("configs/portfolio_harness_full.yaml", "r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    cfg["universe"] = _config()["universe"]
+    cfg["start_date"] = "2020-01-01"
+    cfg["end_date"] = "2021-12-31"
+    cfg["min_assets"] = 10
+    cfg["allow_synthetic_fallback"] = True
+    matrices = _matrices(cfg)
+    base = fixed_safe_harness(base_portfolio_harness(cfg))
+    legal = base.with_patch({"fallback_policy": "risk_parity", "retry_policy": "single_try_fallback"})
+    assert clean_panel_w_star_invariance(base, legal, matrices, cfg)
+
+
+def test_full_paired_bootstrap_has_required_comparisons() -> None:
+    cfg = _config()
+    output = run_portfolio_harness(_bundle(cfg), cfg, quick=True)
+    comparisons = set(output.paired_bootstrap["comparison"])
+    assert "TASE Typed Portfolio Harness Reconstruction - Same-Budget Safe Configuration Search" in comparisons
+    assert "TASE Typed Portfolio Harness Reconstruction - Random Legal Harness Patch" in comparisons
+    assert "TASE Typed Portfolio Harness Reconstruction - Risk Parity Fixed Portfolio" in comparisons
+    assert "TASE Typed Portfolio Harness Reconstruction - Equal Weight ETF Portfolio" in comparisons
+    required = {"cvar_95", "drawdown_duration", "turnover", "transaction_cost_paid", "constraint_violation_severity", "optimizer_recovery_success_rate", "turnover_adjusted_net_return", "locked_cumulative_return", "locked_sharpe"}
+    assert required.issubset(set(output.paired_bootstrap["metric"]))
+
+
+def test_full_report_mentions_return_preservation() -> None:
+    from src.reporting import build_portfolio_harness_technical_report
+
+    cfg = _config()
+    output = run_portfolio_harness(_bundle(cfg), cfg, quick=True)
+    text = build_portfolio_harness_technical_report(
+        output.results_by_split, output.candidate_log, output.summary, output.invalid_high_score_log, output.paired_bootstrap, cfg
+    )
+    assert "Return Preservation" in text
+    assert "Trade-Off" in text
+    assert "not a live trading result" in text
+
+
+def test_plain_chinese_full_summary_mentions_no_alpha_discovery() -> None:
+    from src.reporting import build_portfolio_harness_plain_chinese_summary
+
+    cfg = _config()
+    output = run_portfolio_harness(_bundle(cfg), cfg, quick=True)
+    text = build_portfolio_harness_plain_chinese_summary(output.summary, output.invalid_high_score_log, output.paired_bootstrap, run_label="full")
+    assert "full run" in text
+    assert "不证明真实赚钱能力" in text
+    assert "不说明系统发现了新 alpha" in text
+    assert "固定 alpha" in text

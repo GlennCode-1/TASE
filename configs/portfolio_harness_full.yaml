@@ -1,0 +1,91 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - VTI
+  - EFA
+  - EEM
+  - EWJ
+  - EWU
+  - EWG
+  - FXI
+  - TLT
+  - IEF
+  - SHY
+  - LQD
+  - HYG
+  - TIP
+  - AGG
+  - GLD
+  - SLV
+  - DBC
+  - VNQ
+  - IYR
+  - XLF
+  - XLK
+  - XLE
+  - XLI
+  - XLU
+  - XLP
+  - XLY
+  - XLV
+  - XLB
+  - MTUM
+  - QUAL
+  - USMV
+  - VLUE
+  - VUG
+  - VTV
+start_date: "2007-01-01"
+end_date: "2024-12-31"
+min_history_coverage: 0.90
+min_assets: 25
+raw_data_path: data/raw/public_full_ohlcv.csv
+processed_data_path: data/processed/public_full_prices.csv
+download_source: yfinance
+allow_synthetic_fallback: false
+
+mode: partial_full
+rolling_splits: true
+selection_blocks: 12
+validation_window_blocks: 4
+oos_window_blocks: 2
+final_confirmation_months: 12
+n_seeds: 5
+quick_n_seeds: 1
+search_budget: 100
+quick_search_budget: 12
+candidate_per_round: 8
+bootstrap_samples: 2000
+bootstrap_iterations: 2000
+bootstrap_block_size: 5
+block_size: 5
+
+initial_capital: 1.0
+rebalance_frequency: W-FRI
+transaction_cost_bps: 5
+momentum_window: 20
+volatility_window: 20
+volatility_penalty: 0.5
+risk_aversion_lambda: 3.0
+objective_return_weight: 1.0
+max_weight: 0.18
+turnover_cap: 0.35
+asset_class_cap: 0.55
+min_cash_buffer: 0.0
+long_only: true
+leverage_allowed: false
+benchmark: equal_weight
+covariance_lookback: 60
+covariance_condition_threshold: 1000000.0
+
+stress_scenarios:
+  covariance_near_singular: true
+  missing_returns_block: true
+  stale_price_flags: true
+  optimizer_infeasible_constraints: true
+  high_turnover_pressure: true
+  transaction_cost_spike: true
+  extreme_volatility_regime: true
+  concentration_shock: true
