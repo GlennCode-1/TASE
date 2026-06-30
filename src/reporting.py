@@ -1102,3 +1102,195 @@ def write_sp500_short_reports(
     plain_path.write_text(plain, encoding="utf-8")
     note_path.write_text(note, encoding="utf-8")
     return technical_path, plain_path, note_path
+
+
+
+def _portfolio_row(summary: pd.DataFrame, arm: str) -> pd.Series:
+    return _arm_row(summary, arm)
+
+
+def _portfolio_paired(paired: pd.DataFrame, comparison: str, metric: str) -> pd.Series | None:
+    if paired is None or paired.empty:
+        return None
+    rows = paired[(paired["comparison"] == comparison) & (paired["metric"] == metric)]
+    return None if rows.empty else rows.iloc[0]
+
+
+def interpret_portfolio_harness_results(summary: pd.DataFrame, invalid_log: pd.DataFrame, paired: pd.DataFrame) -> dict[str, bool | str]:
+    tase = _portfolio_row(summary, "TASE Typed Portfolio Harness Reconstruction")
+    safe = _portfolio_row(summary, "Same-Budget Safe Configuration Search")
+    random = _portfolio_row(summary, "Random Legal Harness Patch")
+    h1a = bool(invalid_log is not None and not invalid_log.empty)
+    invalid_reasons = "" if invalid_log is None or invalid_log.empty else " ".join(invalid_log["reason"].astype(str))
+    h2 = bool(
+        float(tase["valid_candidate_count"]) > 0
+        and "POLICY_SPECIFICATION_CHANGED" in invalid_reasons
+        and ("FUTURE_RETURN_LEAKAGE" in invalid_reasons or "CLEAN_PANEL_W_STAR_CHANGED" in invalid_reasons)
+    )
+
+    def improved_vs(label: str) -> bool:
+        good = 0
+        for metric in ["cvar_95", "drawdown_duration", "turnover", "constraint_violation_severity", "optimizer_recovery_success_rate"]:
+            row = _portfolio_paired(paired, label, metric)
+            if row is None:
+                continue
+            mean = float(row["mean_diff"])
+            high = float(row["ci_high"])
+            low = float(row["ci_low"])
+            if metric == "optimizer_recovery_success_rate":
+                good += int(mean > 0 and low >= -1e-9)
+            else:
+                good += int(mean < 0 and high <= 1e-9)
+        ret = _portfolio_paired(paired, label, "turnover_adjusted_net_return")
+        return_ok = ret is None or float(ret["ci_low"]) > -0.02
+        return good >= 2 and return_ok
+
+    h3p = improved_vs("TASE Typed Portfolio Harness Reconstruction - Same-Budget Safe Configuration Search")
+    h4p = improved_vs("TASE Typed Portfolio Harness Reconstruction - Random Legal Harness Patch")
+    h5p = bool(
+        abs(float(tase["turnover"]) - float(safe["turnover"])) > 1e-10
+        or abs(float(tase["locked_cvar_95"]) - float(random["locked_cvar_95"])) > 1e-10
+        or abs(float(tase["optimizer_recovery_success_rate"]) - float(safe["optimizer_recovery_success_rate"])) > 1e-10
+    )
+    recommendation = (
+        "Continue only as a portfolio-construction safety diagnostic. Do not frame this as alpha discovery or live profitability."
+        if h2 and h5p
+        else "The implementation patch space is still too inert; revise stress scenarios or legal harness actions before expanding."
+    )
+    return {"h1a": h1a, "h2": h2, "h3p": h3p, "h4p": h4p, "h5p": h5p, "recommendation": recommendation}
+
+
+def build_portfolio_harness_technical_report(
+    results: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    summary: pd.DataFrame,
+    invalid_log: pd.DataFrame,
+    paired: pd.DataFrame,
+    config: dict,
+) -> str:
+    interp = interpret_portfolio_harness_results(summary, invalid_log, paired)
+    metrics_table = summary.to_markdown(index=False)
+    paired_table = paired.to_markdown(index=False) if paired is not None and not paired.empty else "No paired bootstrap output."
+    invalid_table = invalid_log.head(20).to_markdown(index=False) if invalid_log is not None and not invalid_log.empty else "No invalid high-score candidates."
+    candidate_counts = candidate_log.groupby("arm")["candidate_id"].nunique().to_markdown()
+    return f"""# Portfolio Construction / Risk Management Harness Diagnostic
+
+## Purpose
+
+This experiment freezes the alpha, portfolio policy, objective weights, risk appetite, constraints, universe, and rebalance frequency. It asks whether TASE can improve the implementation layer of portfolio construction and risk management: covariance estimation, solver fallback, constraint repair, turnover enforcement, missing/stale data handling, cost accounting, and exposure monitoring.
+
+It does not test live profitability and it does not allow TASE to discover alpha.
+
+## Fixed Specification
+
+- Alpha: past 20-day momentum minus 0.5 times past 20-day volatility.
+- Risk aversion lambda: {config["risk_aversion_lambda"]}
+- Max weight: {config["max_weight"]}
+- Turnover cap: {config["turnover_cap"]}
+- Asset-class cap: {config["asset_class_cap"]}
+- Rebalance frequency: {config["rebalance_frequency"]}
+- Long-only, no leverage, fixed ETF universe.
+
+## Data
+
+- Requested window: {config["start_date"]} to {config["end_date"]}
+- Effective window: {config.get("effective_start_date", config["start_date"])} to {config.get("effective_end_date", config["end_date"])}
+- Retained ETFs: {config.get("retained_assets", "NA")}
+- Run mode: {config.get("run_mode", "full")}
+
+## Arms
+
+- Fixed Safe Portfolio Harness
+- Same-Budget Safe Configuration Search
+- Random Legal Harness Patch
+- TASE Typed Portfolio Harness Reconstruction
+- Unconstrained Portfolio Harness Search
+- Portfolio Strategy Tuning Baseline
+- Passive baselines: Equal Weight, Risk Parity, 60/40
+
+## Candidate Counts
+
+{candidate_counts}
+
+## Headline Risk / Harness Metrics
+
+{metrics_table}
+
+## Invalid High-Score Log
+
+{invalid_table}
+
+## Paired Block Bootstrap
+
+{paired_table}
+
+## H1a-H5p Judgment
+
+- H1a supported: {interp["h1a"]}. Unconstrained portfolio harness search produced invalid candidates that are logged but not used in legal comparisons.
+- H2 supported: {interp["h2"]}. Hard gates enforce policy-boundary and clean-panel w-star invariance for legal arms.
+- H3p supported: {interp["h3p"]}. This asks whether TASE improves at least two locked risk/implementation metrics versus same-budget safe configuration search without meaningful return sacrifice.
+- H4p supported: {interp["h4p"]}. This asks the same question versus random legal implementation patches.
+- H5p supported: {interp["h5p"]}. This checks whether portfolio construction gives legal harness patches non-zero bite.
+
+## Interpretation
+
+Raw return, annualized return, and Sharpe are secondary. The primary evidence is downside risk, drawdown duration, turnover and cost, constraint violation severity, optimizer recovery, exposure drift, and stress-scenario behavior. If TASE wins only by changing lambda, caps, alpha, objective weights, or rebalance frequency, it fails the task by definition.
+
+## Recommendation
+
+{interp["recommendation"]}
+"""
+
+
+def build_portfolio_harness_plain_chinese_summary(summary: pd.DataFrame, invalid_log: pd.DataFrame, paired: pd.DataFrame) -> str:
+    interp = interpret_portfolio_harness_results(summary, invalid_log, paired)
+    tase = _portfolio_row(summary, "TASE Typed Portfolio Harness Reconstruction")
+    safe = _portfolio_row(summary, "Same-Budget Safe Configuration Search")
+    random = _portfolio_row(summary, "Random Legal Harness Patch")
+    h = lambda key: "支持" if bool(interp[key]) else "不支持/暂时看不出来"
+    next_step = (
+        "下一步可以继续把它作为组合构建安全诊断来做，但不要写成发现 alpha 或证明真实盈利。"
+        if bool(interp["h2"]) and bool(interp["h5p"])
+        else "下一步先改压力场景或合法执行层改动空间，不要急着扩大实验。"
+    )
+    return f"""# 大白话实验结论
+
+## 这次想验证什么
+
+这次不再让系统改选股逻辑，也不再只看 top-k 等权收益。我们固定 alpha、投资目标、风险偏好、仓位上限、换手上限和调仓频率，只让系统在组合构建和风险管理的执行流程里做合法改动。
+
+## 结果怎么样
+
+TASE 的锁定期 CVaR 是 {float(tase['locked_cvar_95']):.4f}，同预算安全搜索是 {float(safe['locked_cvar_95']):.4f}，随机合法修改是 {float(random['locked_cvar_95']):.4f}。TASE 的换手是 {float(tase['turnover']):.4f}，约束违规严重度是 {float(tase['constraint_violation_severity']):.4f}。这些数字只说明执行流程是否更稳，不证明真实赚钱能力，也不说明系统发现了新 alpha。
+
+## 对应假设
+
+H1a：{h('h1a')}。自由搜索会产生非法高分路径。
+H2：{h('h2')}。硬门槛能拦住改 alpha、改风险偏好、改约束等非法修改。
+H3p：{h('h3p')}。TASE 是否优于同预算安全配置搜索。
+H4p：{h('h4p')}。TASE 是否优于随机合法执行层修改。
+H5p：{h('h5p')}。组合构建任务是否让合法执行层修改真正产生差异。
+
+## 下一步
+
+{next_step}
+"""
+
+
+def write_portfolio_harness_reports(
+    results: pd.DataFrame,
+    candidate_log: pd.DataFrame,
+    summary: pd.DataFrame,
+    invalid_log: pd.DataFrame,
+    paired: pd.DataFrame,
+    config: dict,
+    reports_dir: Path,
+) -> tuple[Path, Path]:
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    technical = build_portfolio_harness_technical_report(results, candidate_log, summary, invalid_log, paired, config)
+    plain = build_portfolio_harness_plain_chinese_summary(summary, invalid_log, paired)
+    technical_path = reports_dir / "portfolio_harness_report.md"
+    plain_path = reports_dir / "plain_chinese_summary_portfolio_harness.md"
+    technical_path.write_text(technical, encoding="utf-8")
+    plain_path.write_text(plain, encoding="utf-8")
+    return technical_path, plain_path
