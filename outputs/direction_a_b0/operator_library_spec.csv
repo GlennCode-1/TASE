@@ -1,0 +1,16 @@
+operator_family,status,requires_sector_label,requires_volume,requires_returns,allowed_parameter_keys,frozen_in_b0,notes
+cross_sectional_momentum,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+time_series_momentum,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+short_term_reversal,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+medium_term_reversal,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+volatility,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+low_volatility,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+volatility_scaled_momentum,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+volume_liquidity,included,False,True,True,"holding_period,lookback_window,rank_method,requires_volume,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+moving_average_crossover,included,False,False,True,"fast_window,holding_period,lookback_window,rank_method,sector_neutralization,slow_window,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+breakout,included,False,False,True,"breakout_window,holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+residual_momentum,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+sector_neutral_momentum,included,True,False,True,"holding_period,lookback_window,rank_method,requires_sector_label,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+rank_combination,included,False,False,True,"combination_mode,holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+two_factor_combination,included,False,False,True,"combination_mode,holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed
+risk_adjusted_variant,included,False,False,True,"holding_period,lookback_window,rank_method,sector_neutralization,volatility_scaling",True,pre-registered B0 design only; no PnL computed

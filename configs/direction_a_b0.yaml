@@ -1,0 +1,42 @@
+stage: B0
+project_line: Direction_A_Strategy_Discovery_Workflow
+
+spec_documents:
+  - docs/specs/TASE_Stage_A0_Novelty_Boundary.md
+  - docs/specs/TASE_Stage_A1_Revised_Full_Experiment_Spec.md
+  - docs/specs/TASE_Stage_A1_5_Method_Core_Revision.md
+  - docs/specs/TASE_Stage_A1_6_Formal_Method_Core_Addendum.md
+
+data_source_check:
+  preferred_main_universe: approximate_pit_us_stock_universe
+  fallback_universe: liquid_us_universe_diagnostic
+  sanity_universe: etf_universe
+  start_date: "2007-01-01"
+  end_date: "2024-12-31"
+  require_pit_warning_if_not_true_pit: true
+  max_source_check_hours: 48
+  allow_large_download_in_b0: false
+
+candidate_library:
+  target_candidate_count_min: 1000
+  target_candidate_count_max: 2000
+  freeze_operator_library: true
+  freeze_parameter_grid: true
+  allow_posthoc_operator_expansion: false
+
+hashing:
+  algorithm: sha256
+  float_round_decimals: 10
+  hash_objects:
+    - signal
+    - pnl
+    - turnover
+    - cost_adjusted_pnl
+
+locked_test:
+  physical_separation_required: true
+  accessible_in_b0: false
+
+non_inferiority:
+  sharpe_margin: -0.10
+  net_return_margin: -0.02

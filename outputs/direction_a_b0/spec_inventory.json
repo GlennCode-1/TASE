@@ -1,0 +1,65 @@
+{
+  "spec_count": 4,
+  "found_count": 4,
+  "missing_count": 0,
+  "status": "PASS",
+  "documents": [
+    {
+      "path": "docs/specs/TASE_Stage_A0_Novelty_Boundary.md",
+      "exists": true,
+      "constraints": [
+        "fixed candidate library",
+        "fixed operator library",
+        "fixed candidate budget",
+        "selection reliability",
+        "locked-test isolation"
+      ],
+      "char_count": 14205
+    },
+    {
+      "path": "docs/specs/TASE_Stage_A1_Revised_Full_Experiment_Spec.md",
+      "exists": true,
+      "constraints": [
+        "不修改 transaction cost",
+        "不修改 final metric",
+        "fixed operator library",
+        "fixed parameter grid",
+        "fixed candidate budget",
+        "selection reliability",
+        "archive completeness",
+        "budget invariance",
+        "locked-test isolation"
+      ],
+      "char_count": 17224
+    },
+    {
+      "path": "docs/specs/TASE_Stage_A1_5_Method_Core_Revision.md",
+      "exists": true,
+      "constraints": [
+        "selection reliability",
+        "archive completeness",
+        "budget invariance",
+        "locked-test isolation",
+        "typed workflow patch language",
+        "deterministic patch executor"
+      ],
+      "char_count": 15718
+    },
+    {
+      "path": "docs/specs/TASE_Stage_A1_6_Formal_Method_Core_Addendum.md",
+      "exists": true,
+      "constraints": [
+        "不扩张 alpha/operator/candidate space",
+        "不偷看 locked test",
+        "不修改 transaction cost",
+        "selection reliability",
+        "candidate-level alpha / P&L invariants",
+        "archive completeness",
+        "budget invariance",
+        "locked-test isolation",
+        "typed workflow patch language"
+      ],
+      "char_count": 21360
+    }
+  ]
+}
