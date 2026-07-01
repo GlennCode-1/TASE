@@ -1,0 +1,10 @@
+{
+  "dtype": "float64",
+  "matrix_name": "locked_net_return_matrix",
+  "shape": [
+    56,
+    262
+  ],
+  "split": "locked_test",
+  "universe_id": "b1_mock_30_assets"
+}

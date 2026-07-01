@@ -1,0 +1,10 @@
+{
+  "train_start": "2018-01-01",
+  "train_end": "2018-12-31",
+  "validation_start": "2019-01-01",
+  "validation_end": "2019-12-31",
+  "locked_test_start": "2020-01-01",
+  "locked_test_end": "2020-12-31",
+  "locked_test_inaccessible_before_final": true,
+  "future_nested_expanding_walkforward_placeholder": true
+}

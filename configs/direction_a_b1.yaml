@@ -1,0 +1,42 @@
+stage: B1
+project_line: Direction_A_Strategy_Discovery_Workflow
+
+inputs:
+  b0_report: reports/direction_a_b0_report.md
+  candidate_library_spec: outputs/direction_a_b0/candidate_library_spec.csv
+  operator_library_spec: outputs/direction_a_b0/operator_library_spec.csv
+  candidate_registry_schema: outputs/direction_a_b0/candidate_registry_schema.csv
+  matrix_design: outputs/direction_a_b0/candidate_matrix_design.md
+
+data_audit:
+  preferred_main_universe: approximate_pit_us_stock_universe
+  fallback_universe: liquid_us_universe_diagnostic
+  sanity_universe: etf_universe
+  start_date: "2007-01-01"
+  end_date: "2024-12-31"
+  max_source_check_hours: 48
+  allow_large_download_in_b1: false
+  allow_paid_data_default: false
+  require_license_notes: true
+  require_survivorship_bias_notes: true
+  require_delisting_notes: true
+
+smoke_precompute:
+  enabled: true
+  universe_size_max: 30
+  candidate_count_max: 60
+  date_start: "2018-01-01"
+  date_end: "2020-12-31"
+  use_locked_test_physical_separation: true
+  locked_test_start: "2020-01-01"
+  locked_test_end: "2020-12-31"
+  transaction_cost_bps: 5
+
+hashing:
+  algorithm: sha256
+  float_round_decimals: 10
+
+storage:
+  dense_matrix_format: numpy_npy
+  audit_table_format: csv
+  commit_large_matrices_to_git: false

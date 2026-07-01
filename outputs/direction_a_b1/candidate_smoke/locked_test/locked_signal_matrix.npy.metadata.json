@@ -1,0 +1,11 @@
+{
+  "dtype": "float64",
+  "matrix_name": "locked_signal_matrix",
+  "shape": [
+    56,
+    262,
+    30
+  ],
+  "split": "locked_test",
+  "universe_id": "b1_mock_30_assets"
+}

@@ -1,0 +1,11 @@
+{
+  "dtype": "float64",
+  "matrix_name": "position_matrix",
+  "shape": [
+    56,
+    522,
+    30
+  ],
+  "split": "train_validation",
+  "universe_id": "b1_mock_30_assets"
+}

@@ -1,0 +1,10 @@
+{
+  "dtype": "float64",
+  "matrix_name": "cost_adjusted_pnl_matrix",
+  "shape": [
+    56,
+    522
+  ],
+  "split": "train_validation",
+  "universe_id": "b1_mock_30_assets"
+}
